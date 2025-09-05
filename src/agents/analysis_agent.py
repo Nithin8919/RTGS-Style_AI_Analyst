@@ -1,33 +1,37 @@
 """
-RTGS AI Analyst - Analysis Agent
-Performs statistical analysis, KPI calculations, and hypothesis testing
+RTGS AI Analyst - Analysis Agent (Complete Implementation)
+Performs statistical analysis, KPI calculation, and hypothesis testing
 """
 
 import pandas as pd
 import numpy as np
+from scipy import stats
+from scipy.stats import pearsonr, spearmanr, normaltest, levene, ttest_ind, mannwhitneyu
+from typing import Dict, Any, List, Optional, Tuple
 import json
 import yaml
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
-import scipy.stats as stats
-from scipy.stats import pearsonr, spearmanr, normaltest, levene
 import warnings
 
-from src.utils.logging import get_agent_logger, TransformLogger
+from src.utils.logging import get_agent_logger
 
 warnings.filterwarnings('ignore')
 
 
 class AnalysisAgent:
-    """Agent responsible for statistical analysis and KPI generation"""
+    """Agent responsible for statistical analysis and KPI computation"""
     
     def __init__(self, config_path: str = "config.yaml"):
         self.logger = get_agent_logger("analysis")
         
         # Load configuration
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        try:
+            with open(config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
+        except FileNotFoundError:
+            self.logger.warning(f"Config file {config_path} not found, using defaults")
+            self.config = {}
         
         # Extract statistical parameters
         self.stats_config = self.config.get('statistics', {})

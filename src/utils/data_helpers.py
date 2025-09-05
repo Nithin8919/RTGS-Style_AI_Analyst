@@ -1,519 +1,651 @@
 """
-RTGS AI Analyst - Data Helpers
-Utility functions for data manipulation, encoding detection, and file processing
+RTGS AI Analyst - Data Helper Utilities
+Complete implementation of data processing utilities
 """
 
 import pandas as pd
 import numpy as np
+from typing import Dict, Any, List, Optional, Tuple, Union
 import chardet
 import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Union
-import json
-from collections import Counter
-import warnings
+import logging
+from datetime import datetime
+import zipfile
+import gzip
 
-warnings.filterwarnings('ignore')
+logger = logging.getLogger(__name__)
 
-
-def detect_encoding(file_path: str, sample_size: int = 10000) -> str:
-    """Detect file encoding using chardet with fallback options"""
+def detect_encoding(file_path: str) -> str:
+    """Detect file encoding using chardet"""
     try:
-        with open(file_path, 'rb') as file:
-            sample = file.read(sample_size)
-            result = chardet.detect(sample)
+        with open(file_path, 'rb') as f:
+            raw_data = f.read(50000)  # Read first 50KB
+            result = chardet.detect(raw_data)
+            confidence = result.get('confidence', 0.0)
+            encoding = result.get('encoding', 'utf-8')
             
-            if result['confidence'] > 0.7:
-                return result['encoding']
+            logger.debug(f"Detected encoding: {encoding} (confidence: {confidence:.2f})")
             
-            # Fallback encodings to try
-            fallback_encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
-            
-            for encoding in fallback_encodings:
-                try:
-                    with open(file_path, 'r', encoding=encoding) as test_file:
-                        test_file.read(1000)
-                    return encoding
-                except (UnicodeDecodeError, UnicodeError):
-                    continue
-            
-            # Last resort
-            return 'utf-8'
-            
-    except Exception:
+            # Fallback for low confidence
+            if confidence < 0.7:
+                logger.warning(f"Low confidence encoding detection, falling back to utf-8")
+                return 'utf-8'
+                
+            return encoding or 'utf-8'
+    except Exception as e:
+        logger.error(f"Encoding detection failed: {e}")
         return 'utf-8'
 
-
-def detect_separator(file_path: str, encoding: str = 'utf-8', sample_lines: int = 10) -> str:
+def detect_separator(file_path: str, encoding: str = 'utf-8') -> str:
     """Detect CSV separator by analyzing first few lines"""
     try:
-        with open(file_path, 'r', encoding=encoding) as file:
-            sample_text = ""
-            for _ in range(sample_lines):
-                line = file.readline()
-                if not line:
-                    break
-                sample_text += line
-        
-        # Count potential separators
+        with open(file_path, 'r', encoding=encoding) as f:
+            # Read first 5 lines for analysis
+            lines = [f.readline().strip() for _ in range(5)]
+            lines = [line for line in lines if line]  # Remove empty lines
+            
+        if not lines:
+            return ','
+            
+        # Common separators to test
         separators = [',', ';', '\t', '|', ':']
-        separator_counts = {}
+        sep_scores = {}
         
         for sep in separators:
-            # Count occurrences per line
-            lines = sample_text.split('\n')
-            counts_per_line = [line.count(sep) for line in lines if line.strip()]
+            # Count occurrences across all lines
+            counts = [line.count(sep) for line in lines]
             
-            if counts_per_line:
-                # Check consistency (same count per line suggests it's the separator)
-                most_common_count = Counter(counts_per_line).most_common(1)[0][1]
-                consistency = most_common_count / len(counts_per_line)
-                avg_count = sum(counts_per_line) / len(counts_per_line)
+            # Good separator should have:
+            # 1. Consistent count across lines
+            # 2. At least 1 occurrence per line
+            if len(set(counts)) == 1 and counts[0] > 0:
+                sep_scores[sep] = counts[0]
+            elif all(c > 0 for c in counts):
+                # Accept if all lines have at least one occurrence
+                sep_scores[sep] = min(counts)
                 
-                separator_counts[sep] = {
-                    'avg_count': avg_count,
-                    'consistency': consistency,
-                    'score': avg_count * consistency
-                }
+        if sep_scores:
+            best_sep = max(sep_scores.keys(), key=sep_scores.get)
+            logger.debug(f"Detected separator: '{best_sep}' with {sep_scores[best_sep]} fields")
+            return best_sep
         
-        # Select separator with highest score
-        if separator_counts:
-            best_sep = max(separator_counts.keys(), key=lambda x: separator_counts[x]['score'])
-            if separator_counts[best_sep]['score'] > 1:  # Minimum threshold
-                return best_sep
-        
-        # Default fallback
+        # Fallback: use comma
+        logger.warning("Could not reliably detect separator, using comma")
         return ','
         
-    except Exception:
+    except Exception as e:
+        logger.error(f"Separator detection failed: {e}")
         return ','
 
-
-def estimate_row_count(file_path: str, sample_size: int = 1024*1024) -> int:
-    """Estimate total row count for large files"""
+def estimate_row_count(file_path: str, encoding: str = 'utf-8') -> int:
+    """Estimate total rows in file efficiently"""
     try:
-        path = Path(file_path)
-        file_size = path.stat().st_size
+        file_size = Path(file_path).stat().st_size
         
-        if file_size < sample_size:
-            # Small file, count exactly
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                return sum(1 for _ in f)
+        # For small files, count exactly
+        if file_size < 1_000_000:  # 1MB
+            with open(file_path, 'r', encoding=encoding) as f:
+                return sum(1 for _ in f) - 1  # Subtract header
         
-        # Large file, estimate from sample
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        # For large files, estimate based on sample
+        sample_size = min(100_000, file_size // 10)  # Sample 10% or 100KB
+        
+        with open(file_path, 'rb') as f:
             sample = f.read(sample_size)
-            lines_in_sample = sample.count('\n')
+            lines_in_sample = sample.count(b'\n')
             
-            if lines_in_sample == 0:
-                return 0
+        if lines_in_sample == 0:
+            return 0
             
-            # Estimate total lines
-            estimated_lines = int((file_size / sample_size) * lines_in_sample)
-            return max(1, estimated_lines)
-            
-    except Exception:
+        # Estimate based on sample
+        estimated = int((file_size / sample_size) * lines_in_sample) - 1
+        logger.debug(f"Estimated {estimated:,} rows in file ({file_size:,} bytes)")
+        return max(0, estimated)
+        
+    except Exception as e:
+        logger.error(f"Row count estimation failed: {e}")
         return 0
 
+def detect_column_types(df: pd.DataFrame, sample_size: int = 1000) -> Dict[str, Dict]:
+    """
+    Detect column types with confidence scores
+    Returns detailed type information for each column
+    """
+    results = {}
+    
+    # Work with sample for large datasets
+    if len(df) > sample_size:
+        sample_df = df.sample(n=sample_size, random_state=42)
+    else:
+        sample_df = df
+    
+    for col in df.columns:
+        series = sample_df[col].dropna()
+        
+        if len(series) == 0:
+            results[col] = {
+                'type': 'unknown',
+                'confidence': 0.0,
+                'null_frac': 1.0,
+                'unique_frac': 0.0,
+                'sample_values': []
+            }
+            continue
+        
+        # Calculate basic stats
+        null_frac = df[col].isnull().sum() / len(df)
+        unique_frac = len(series.unique()) / len(series) if len(series) > 0 else 0
+        sample_values = series.head(10).tolist()
+        
+        # Type detection with confidence scoring
+        type_scores = {}
+        
+        # 1. Numeric detection
+        type_scores['numeric'] = _detect_numeric(series)
+        
+        # 2. Integer detection  
+        type_scores['integer'] = _detect_integer(series)
+        
+        # 3. Float detection
+        type_scores['float'] = _detect_float(series)
+        
+        # 4. Date detection
+        type_scores['datetime'] = _detect_datetime(series)
+        
+        # 5. Boolean detection
+        type_scores['boolean'] = _detect_boolean(series)
+        
+        # 6. Categorical detection
+        type_scores['categorical'] = _detect_categorical(series, unique_frac)
+        
+        # 7. Geographic detection
+        type_scores['geographic'] = _detect_geographic(series)
+        
+        # 8. ID detection
+        type_scores['id'] = _detect_id(series, unique_frac)
+        
+        # 9. Currency detection
+        type_scores['currency'] = _detect_currency(series)
+        
+        # 10. Default to text
+        type_scores['text'] = 0.3  # Base score for text
+        
+        # Get best type
+        best_type = max(type_scores.keys(), key=type_scores.get)
+        best_confidence = type_scores[best_type]
+        
+        # If confidence is low, mark as ambiguous
+        if best_confidence < 0.6:
+            best_type = 'text'  # Default to text for ambiguous cases
+        
+        results[col] = {
+            'type': best_type,
+            'confidence': best_confidence,
+            'type_scores': type_scores,
+            'null_frac': null_frac,
+            'unique_frac': unique_frac,
+            'sample_values': sample_values,
+            'stats': _calculate_column_stats(df[col], best_type)
+        }
+    
+    return results
+
+def _detect_numeric(series: pd.Series) -> float:
+    """Detect if column is numeric"""
+    try:
+        numeric_series = pd.to_numeric(series, errors='coerce')
+        success_rate = numeric_series.notna().sum() / len(series)
+        return success_rate
+    except:
+        return 0.0
+
+def _detect_integer(series: pd.Series) -> float:
+    """Detect if column is integer"""
+    try:
+        # First check if numeric
+        numeric_series = pd.to_numeric(series, errors='coerce')
+        numeric_rate = numeric_series.notna().sum() / len(series)
+        
+        if numeric_rate < 0.8:
+            return 0.0
+        
+        # Check if values are integers
+        valid_numeric = numeric_series.dropna()
+        if len(valid_numeric) == 0:
+            return 0.0
+            
+        integer_rate = (valid_numeric == valid_numeric.astype(int)).sum() / len(valid_numeric)
+        return numeric_rate * integer_rate
+    except:
+        return 0.0
+
+def _detect_float(series: pd.Series) -> float:
+    """Detect if column is float"""
+    try:
+        numeric_series = pd.to_numeric(series, errors='coerce')
+        numeric_rate = numeric_series.notna().sum() / len(series)
+        
+        if numeric_rate < 0.8:
+            return 0.0
+        
+        # Check if values have decimal parts
+        valid_numeric = numeric_series.dropna()
+        if len(valid_numeric) == 0:
+            return 0.0
+            
+        has_decimal = (valid_numeric != valid_numeric.astype(int)).sum() / len(valid_numeric)
+        return numeric_rate * has_decimal
+    except:
+        return 0.0
+
+def _detect_datetime(series: pd.Series) -> float:
+    """Detect if column contains dates"""
+    # Common date formats to try
+    date_formats = [
+        '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y-%m-%d %H:%M:%S',
+        '%d-%m-%Y', '%Y/%m/%d', '%d.%m.%Y', '%Y', '%m/%Y',
+        '%d-%b-%Y', '%d %B %Y', '%B %d, %Y'
+    ]
+    
+    max_success_rate = 0.0
+    
+    for fmt in date_formats:
+        try:
+            parsed = pd.to_datetime(series, format=fmt, errors='coerce')
+            success_rate = parsed.notna().sum() / len(series)
+            max_success_rate = max(max_success_rate, success_rate)
+        except:
+            continue
+    
+    # Also try general datetime parsing
+    try:
+        parsed = pd.to_datetime(series, errors='coerce')
+        success_rate = parsed.notna().sum() / len(series)
+        max_success_rate = max(max_success_rate, success_rate)
+    except:
+        pass
+    
+    return max_success_rate
+
+def _detect_boolean(series: pd.Series) -> float:
+    """Detect if column contains boolean values"""
+    try:
+        unique_vals = set(series.astype(str).str.lower().str.strip().unique())
+        
+        # Remove NaN-like values
+        unique_vals.discard('nan')
+        unique_vals.discard('none')
+        unique_vals.discard('')
+        
+        # Boolean value sets
+        bool_sets = [
+            {'true', 'false'},
+            {'1', '0'},
+            {'yes', 'no'},
+            {'y', 'n'},
+            {'t', 'f'},
+            {'1.0', '0.0'}
+        ]
+        
+        for bool_set in bool_sets:
+            if unique_vals.issubset(bool_set) and len(unique_vals) >= 1:
+                return 1.0
+        
+        return 0.0
+    except:
+        return 0.0
+
+def _detect_categorical(series: pd.Series, unique_frac: float) -> float:
+    """Detect if column is categorical"""
+    try:
+        # Categorical if few unique values and mostly text
+        if unique_frac < 0.1 and len(series.unique()) > 1:
+            # Check if values are string-like
+            is_string = series.astype(str).apply(lambda x: isinstance(x, str)).mean()
+            return min(1.0, (1.0 - unique_frac) * is_string)
+        return 0.0
+    except:
+        return 0.0
+
+def _detect_geographic(series: pd.Series) -> float:
+    """Detect if column contains geographic data"""
+    try:
+        # Look for geographic keywords
+        geo_keywords = [
+            'district', 'state', 'city', 'village', 'mandal', 'tehsil',
+            'block', 'ward', 'constituency', 'pincode', 'zip'
+        ]
+        
+        sample_str = ' '.join(series.astype(str).str.lower().head(20))
+        
+        keyword_score = sum(1 for keyword in geo_keywords if keyword in sample_str)
+        
+        # Check for coordinate patterns (lat, lon)
+        try:
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            if numeric_series.notna().sum() / len(series) > 0.8:
+                # Check if values are in lat/lon range
+                valid_coords = numeric_series.dropna()
+                if len(valid_coords) > 0:
+                    lat_like = ((valid_coords >= -90) & (valid_coords <= 90)).mean()
+                    lon_like = ((valid_coords >= -180) & (valid_coords <= 180)).mean()
+                    if lat_like > 0.8 or lon_like > 0.8:
+                        return 0.9
+        except:
+            pass
+        
+        return min(0.8, keyword_score * 0.3)
+    except:
+        return 0.0
+
+def _detect_id(series: pd.Series, unique_frac: float) -> float:
+    """Detect if column is an ID field"""
+    try:
+        # High uniqueness
+        if unique_frac < 0.95:
+            return 0.0
+        
+        # Check for ID patterns
+        sample_str = series.astype(str).head(10)
+        
+        # Pattern scoring
+        patterns = [
+            r'^\d+$',  # Pure numbers
+            r'^[A-Z]+\d+$',  # Letters followed by numbers
+            r'^\d+[A-Z]+\d*$',  # Numbers with letters
+            r'^[A-Z0-9]+$'  # Alphanumeric
+        ]
+        
+        pattern_score = 0
+        for pattern in patterns:
+            matches = sample_str.str.match(pattern, na=False).sum()
+            pattern_score = max(pattern_score, matches / len(sample_str))
+        
+        return unique_frac * pattern_score
+    except:
+        return 0.0
+
+def _detect_currency(series: pd.Series) -> float:
+    """Detect if column contains currency values"""
+    try:
+        sample_str = series.astype(str).head(20)
+        
+        # Look for currency symbols and patterns
+        currency_patterns = [
+            r'₹',  # Rupee symbol
+            r'\$',  # Dollar symbol
+            r'rs\.?',  # Rs.
+            r'inr',  # INR
+            r'crore',  # Crore
+            r'lakh',  # Lakh
+        ]
+        
+        pattern_score = 0
+        for pattern in currency_patterns:
+            matches = sample_str.str.contains(pattern, case=False, na=False).sum()
+            pattern_score = max(pattern_score, matches / len(sample_str))
+        
+        # Also check if numeric after removing currency symbols
+        try:
+            cleaned = series.astype(str).str.replace(r'[₹$,\s]', '', regex=True)
+            numeric_rate = pd.to_numeric(cleaned, errors='coerce').notna().sum() / len(series)
+            pattern_score = max(pattern_score, numeric_rate)
+        except:
+            pass
+        
+        return pattern_score
+    except:
+        return 0.0
+
+def _calculate_column_stats(series: pd.Series, col_type: str) -> Dict:
+    """Calculate type-specific statistics for column"""
+    stats = {}
+    
+    try:
+        if col_type in ['numeric', 'integer', 'float']:
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            valid_series = numeric_series.dropna()
+            
+            if len(valid_series) > 0:
+                stats.update({
+                    'min': float(valid_series.min()),
+                    'max': float(valid_series.max()),
+                    'mean': float(valid_series.mean()),
+                    'median': float(valid_series.median()),
+                    'std': float(valid_series.std()),
+                    'q25': float(valid_series.quantile(0.25)),
+                    'q75': float(valid_series.quantile(0.75))
+                })
+        
+        elif col_type == 'datetime':
+            date_series = pd.to_datetime(series, errors='coerce')
+            valid_dates = date_series.dropna()
+            
+            if len(valid_dates) > 0:
+                stats.update({
+                    'min_date': valid_dates.min().isoformat(),
+                    'max_date': valid_dates.max().isoformat(),
+                    'date_range_days': (valid_dates.max() - valid_dates.min()).days
+                })
+        
+        elif col_type in ['categorical', 'text']:
+            valid_series = series.dropna()
+            value_counts = valid_series.value_counts()
+            
+            stats.update({
+                'top_values': value_counts.head(5).to_dict(),
+                'unique_count': len(value_counts),
+                'most_common': value_counts.index[0] if len(value_counts) > 0 else None
+            })
+    
+    except Exception as e:
+        logger.warning(f"Failed to calculate stats for column type {col_type}: {e}")
+    
+    return stats
 
 def standardize_column_names(columns: List[str]) -> Dict[str, str]:
-    """Standardize column names to snake_case format"""
+    """Standardize column names to snake_case with intelligent mapping"""
     mapping = {}
     
     for col in columns:
-        # Convert to snake_case
-        standardized = col.strip()
+        original = col
         
-        # Replace common patterns
-        standardized = re.sub(r'[^\w\s]', '', standardized)  # Remove special chars except underscore
-        standardized = re.sub(r'\s+', '_', standardized)  # Spaces to underscores
-        standardized = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', standardized)  # CamelCase to snake_case
+        # Clean the column name
+        # Remove special characters except underscore
+        standardized = re.sub(r'[^\w\s]', '', col)
+        
+        # Replace spaces with underscores
+        standardized = re.sub(r'\s+', '_', standardized)
+        
+        # Convert to lowercase
         standardized = standardized.lower()
         
         # Remove multiple underscores
         standardized = re.sub(r'_+', '_', standardized)
+        
+        # Remove leading/trailing underscores
         standardized = standardized.strip('_')
         
-        # Ensure it's a valid Python identifier
-        if not standardized or standardized[0].isdigit():
+        # Handle empty names
+        if not standardized:
+            standardized = f"column_{hash(original) % 1000}"
+        
+        # Handle numeric-only names
+        if standardized.isdigit():
             standardized = f"col_{standardized}"
         
-        # Handle duplicates
-        original_standardized = standardized
-        counter = 1
-        while standardized in mapping.values():
-            standardized = f"{original_standardized}_{counter}"
-            counter += 1
-        
-        mapping[col] = standardized
+        mapping[original] = standardized
     
     return mapping
 
+def detect_outliers_iqr(series: pd.Series, multiplier: float = 1.5) -> pd.Series:
+    """Detect outliers using IQR method"""
+    try:
+        # Convert to numeric
+        numeric_series = pd.to_numeric(series, errors='coerce')
+        
+        if numeric_series.isna().all():
+            return pd.Series([False] * len(series), index=series.index)
+        
+        Q1 = numeric_series.quantile(0.25)
+        Q3 = numeric_series.quantile(0.75)
+        IQR = Q3 - Q1
+        
+        if IQR == 0:  # No variance
+            return pd.Series([False] * len(series), index=series.index)
+        
+        lower_bound = Q1 - multiplier * IQR
+        upper_bound = Q3 + multiplier * IQR
+        
+        outliers = (numeric_series < lower_bound) | (numeric_series > upper_bound)
+        
+        # Handle NaN values
+        outliers = outliers.fillna(False)
+        
+        return outliers
+        
+    except Exception as e:
+        logger.error(f"Outlier detection failed: {e}")
+        return pd.Series([False] * len(series), index=series.index)
 
-def detect_column_types(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-    """Detect and suggest column types with confidence scores"""
-    type_suggestions = {}
-    
-    for col in df.columns:
-        series = df[col].dropna()
-        
-        if len(series) == 0:
-            type_suggestions[col] = {
-                'suggested_type': 'object',
-                'confidence': 0.0,
-                'rationale': 'Column is entirely null'
+def safe_type_conversion(series: pd.Series, target_type: str) -> pd.Series:
+    """Safely convert series to target type with error handling"""
+    try:
+        if target_type == 'numeric':
+            return pd.to_numeric(series, errors='coerce')
+            
+        elif target_type == 'integer':
+            numeric = pd.to_numeric(series, errors='coerce')
+            return numeric.astype('Int64')  # Nullable integer type
+            
+        elif target_type == 'float':
+            return pd.to_numeric(series, errors='coerce').astype(float)
+            
+        elif target_type == 'datetime':
+            return pd.to_datetime(series, errors='coerce')
+            
+        elif target_type == 'boolean':
+            # Handle various boolean representations
+            bool_map = {
+                'true': True, 'false': False,
+                '1': True, '0': False,
+                'yes': True, 'no': False,
+                'y': True, 'n': False,
+                't': True, 'f': False,
+                '1.0': True, '0.0': False
             }
-            continue
+            
+            return series.astype(str).str.lower().str.strip().map(bool_map)
+            
+        elif target_type == 'categorical':
+            return series.astype('category')
+            
+        else:  # Default to string
+            return series.astype(str)
+            
+    except Exception as e:
+        logger.warning(f"Type conversion to {target_type} failed: {e}")
+        return series  # Return original series if conversion fails
+
+def load_dataset_robust(file_path: str, **kwargs) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """
+    Robustly load dataset with automatic format detection and error handling
+    Returns tuple of (dataframe, metadata)
+    """
+    file_path = Path(file_path)
+    
+    if not file_path.exists():
+        raise FileNotFoundError(f"Dataset file not found: {file_path}")
+    
+    # Detect file info
+    encoding = detect_encoding(str(file_path))
+    file_info = {
+        'file_path': str(file_path),
+        'file_size': file_path.stat().st_size,
+        'encoding': encoding,
+        'format': file_path.suffix.lower()
+    }
+    
+    try:
+        if file_path.suffix.lower() == '.csv':
+            separator = detect_separator(str(file_path), encoding)
+            file_info['separator'] = separator
+            
+            # Load with detected parameters
+            df = pd.read_csv(
+                file_path,
+                encoding=encoding,
+                sep=separator,
+                low_memory=False,
+                **kwargs
+            )
+            
+        elif file_path.suffix.lower() in ['.xlsx', '.xls']:
+            df = pd.read_excel(file_path, **kwargs)
+            
+        elif file_path.suffix.lower() == '.parquet':
+            df = pd.read_parquet(file_path, **kwargs)
+            
+        elif file_path.suffix.lower() == '.json':
+            df = pd.read_json(file_path, **kwargs)
+            
+        else:
+            raise ValueError(f"Unsupported file format: {file_path.suffix}")
         
-        # Calculate basic statistics
-        null_frac = df[col].isnull().sum() / len(df)
-        unique_frac = len(series.unique()) / len(series) if len(series) > 0 else 0
-        
-        # Type detection logic
-        type_info = _detect_single_column_type(series)
-        type_info.update({
-            'null_fraction': null_frac,
-            'unique_fraction': unique_frac,
-            'sample_values': series.head(10).tolist()
+        # Add metadata
+        file_info.update({
+            'rows': len(df),
+            'columns': len(df.columns),
+            'column_names': list(df.columns),
+            'memory_usage_mb': df.memory_usage(deep=True).sum() / 1024 / 1024
         })
         
-        type_suggestions[col] = type_info
-    
-    return type_suggestions
-
-
-def _detect_single_column_type(series: pd.Series) -> Dict[str, Any]:
-    """Detect type for a single column"""
-    
-    # Convert to string for pattern analysis
-    str_series = series.astype(str)
-    
-    # Check for numeric types
-    numeric_score = _check_numeric_type(series)
-    if numeric_score['confidence'] > 0.8:
-        return numeric_score
-    
-    # Check for datetime
-    datetime_score = _check_datetime_type(str_series)
-    if datetime_score['confidence'] > 0.7:
-        return datetime_score
-    
-    # Check for boolean
-    boolean_score = _check_boolean_type(str_series)
-    if boolean_score['confidence'] > 0.8:
-        return boolean_score
-    
-    # Check for categorical
-    categorical_score = _check_categorical_type(series)
-    if categorical_score['confidence'] > 0.6:
-        return categorical_score
-    
-    # Check for geographic coordinates
-    geo_score = _check_geographic_type(str_series)
-    if geo_score['confidence'] > 0.7:
-        return geo_score
-    
-    # Check for ID/identifier
-    id_score = _check_id_type(series, str_series)
-    if id_score['confidence'] > 0.8:
-        return id_score
-    
-    # Default to text
-    return {
-        'suggested_type': 'object',
-        'confidence': 0.5,
-        'rationale': 'Mixed or unrecognized patterns, defaulting to text'
-    }
-
-
-def _check_numeric_type(series: pd.Series) -> Dict[str, Any]:
-    """Check if column is numeric"""
-    try:
-        # Try converting to numeric
-        numeric_series = pd.to_numeric(series, errors='coerce')
-        success_rate = (~numeric_series.isnull()).sum() / len(series)
+        logger.info(f"Successfully loaded dataset: {len(df):,} rows × {len(df.columns)} columns")
         
-        if success_rate > 0.9:
-            # Determine if integer or float
-            if (numeric_series == numeric_series.astype(int)).all():
-                return {
-                    'suggested_type': 'int64',
-                    'confidence': success_rate,
-                    'rationale': f'{success_rate:.1%} of values are integers'
-                }
+        return df, file_info
+        
+    except Exception as e:
+        logger.error(f"Failed to load dataset {file_path}: {e}")
+        raise
+
+def create_sample_dataset(df: pd.DataFrame, 
+                         sample_rows: int = 500, 
+                         method: str = 'stratified') -> pd.DataFrame:
+    """Create a representative sample of the dataset"""
+    try:
+        if len(df) <= sample_rows:
+            return df.copy()
+        
+        if method == 'random':
+            return df.sample(n=sample_rows, random_state=42)
+        
+        elif method == 'stratified':
+            # Try to stratify by categorical columns
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+            
+            if len(categorical_cols) > 0:
+                # Use first categorical column for stratification
+                strat_col = categorical_cols[0]
+                try:
+                    return df.groupby(strat_col, group_keys=False).apply(
+                        lambda x: x.sample(min(len(x), max(1, sample_rows // len(df[strat_col].unique()))), 
+                                         random_state=42)
+                    ).head(sample_rows)
+                except:
+                    # Fallback to random sampling
+                    return df.sample(n=sample_rows, random_state=42)
             else:
-                return {
-                    'suggested_type': 'float64',
-                    'confidence': success_rate,
-                    'rationale': f'{success_rate:.1%} of values are numeric (float)'
-                }
+                return df.sample(n=sample_rows, random_state=42)
         
-        return {
-            'suggested_type': 'object',
-            'confidence': success_rate * 0.5,
-            'rationale': f'Only {success_rate:.1%} of values are numeric'
-        }
+        elif method == 'systematic':
+            step = len(df) // sample_rows
+            indices = list(range(0, len(df), step))[:sample_rows]
+            return df.iloc[indices]
         
-    except Exception:
-        return {'suggested_type': 'object', 'confidence': 0.0, 'rationale': 'Numeric conversion failed'}
-
-
-def _check_datetime_type(str_series: pd.Series) -> Dict[str, Any]:
-    """Check if column contains datetime values"""
-    
-    # Common date patterns
-    date_patterns = [
-        r'\d{4}-\d{2}-\d{2}',  # YYYY-MM-DD
-        r'\d{2}/\d{2}/\d{4}',  # MM/DD/YYYY or DD/MM/YYYY
-        r'\d{2}-\d{2}-\d{4}',  # MM-DD-YYYY or DD-MM-YYYY
-        r'\d{1,2}/\d{1,2}/\d{2,4}',  # M/D/YY or M/D/YYYY
-    ]
-    
-    datetime_patterns = [
-        r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}',  # YYYY-MM-DD HH:MM:SS
-        r'\d{2}/\d{2}/\d{4} \d{2}:\d{2}',  # MM/DD/YYYY HH:MM
-    ]
-    
-    all_patterns = date_patterns + datetime_patterns
-    
-    # Check pattern matches
-    total_matches = 0
-    for pattern in all_patterns:
-        matches = str_series.str.match(pattern).sum()
-        total_matches = max(total_matches, matches)
-    
-    match_rate = total_matches / len(str_series)
-    
-    # Try pandas datetime parsing
-    try:
-        pd.to_datetime(str_series.head(min(100, len(str_series))), errors='raise')
-        pandas_success = True
-    except:
-        pandas_success = False
-    
-    confidence = match_rate
-    if pandas_success:
-        confidence = min(0.9, confidence + 0.3)
-    
-    if confidence > 0.7:
-        return {
-            'suggested_type': 'datetime64[ns]',
-            'confidence': confidence,
-            'rationale': f'{match_rate:.1%} match datetime patterns'
-        }
-    
-    return {'suggested_type': 'object', 'confidence': confidence * 0.5, 'rationale': 'Low datetime pattern match'}
-
-
-def _check_boolean_type(str_series: pd.Series) -> Dict[str, Any]:
-    """Check if column contains boolean values"""
-    
-    # Convert to lowercase for checking
-    lower_series = str_series.str.lower().str.strip()
-    
-    boolean_values = {
-        'true', 'false', 'yes', 'no', 'y', 'n', 
-        '1', '0', 'on', 'off', 'enabled', 'disabled'
-    }
-    
-    # Check how many values are boolean-like
-    boolean_matches = lower_series.isin(boolean_values).sum()
-    match_rate = boolean_matches / len(str_series)
-    
-    if match_rate > 0.8:
-        return {
-            'suggested_type': 'bool',
-            'confidence': match_rate,
-            'rationale': f'{match_rate:.1%} are boolean-like values'
-        }
-    
-    return {'suggested_type': 'object', 'confidence': match_rate * 0.3, 'rationale': 'Low boolean pattern match'}
-
-
-def _check_categorical_type(series: pd.Series) -> Dict[str, Any]:
-    """Check if column should be categorical"""
-    
-    unique_count = len(series.unique())
-    total_count = len(series)
-    
-    if total_count == 0:
-        return {'suggested_type': 'object', 'confidence': 0.0, 'rationale': 'Empty series'}
-    
-    unique_ratio = unique_count / total_count
-    
-    # Categorical if low unique ratio and reasonable number of categories
-    if unique_ratio < 0.1 and unique_count < 100:
-        confidence = (0.1 - unique_ratio) / 0.1  # Higher confidence for lower ratios
-        return {
-            'suggested_type': 'category',
-            'confidence': confidence,
-            'rationale': f'{unique_count} unique values ({unique_ratio:.1%} of total)'
-        }
-    
-    return {'suggested_type': 'object', 'confidence': 0.0, 'rationale': f'Too many unique values ({unique_count})'}
-
-
-def _check_geographic_type(str_series: pd.Series) -> Dict[str, Any]:
-    """Check if column contains geographic coordinates"""
-    
-    # Latitude/longitude patterns
-    lat_pattern = r'^-?([0-8]?[0-9]|90)\.?\d*$'
-    lon_pattern = r'^-?(1[0-7]\d|[0-9]?\d|180)\.?\d*$'
-    
-    # Check if values look like coordinates
-    numeric_series = pd.to_numeric(str_series, errors='coerce')
-    numeric_ratio = (~numeric_series.isnull()).sum() / len(str_series)
-    
-    if numeric_ratio > 0.8:
-        # Check if values are in lat/lon ranges
-        lat_like = ((numeric_series >= -90) & (numeric_series <= 90)).sum()
-        lon_like = ((numeric_series >= -180) & (numeric_series <= 180)).sum()
-        
-        lat_ratio = lat_like / len(str_series)
-        lon_ratio = lon_like / len(str_series)
-        
-        if lat_ratio > 0.9:
-            return {
-                'suggested_type': 'float64',
-                'confidence': lat_ratio,
-                'rationale': 'Values appear to be latitude coordinates'
-            }
-        elif lon_ratio > 0.9:
-            return {
-                'suggested_type': 'float64', 
-                'confidence': lon_ratio,
-                'rationale': 'Values appear to be longitude coordinates'
-            }
-    
-    return {'suggested_type': 'object', 'confidence': 0.0, 'rationale': 'Not geographic coordinates'}
-
-
-def _check_id_type(series: pd.Series, str_series: pd.Series) -> Dict[str, Any]:
-    """Check if column is an identifier/ID column"""
-    
-    unique_ratio = len(series.unique()) / len(series)
-    
-    # High uniqueness suggests ID
-    if unique_ratio > 0.95:
-        
-        # Check for ID-like patterns
-        id_patterns = [
-            r'^[A-Z]{2,4}\d+$',  # Like ABC123, ABCD1234
-            r'^\d+$',  # Pure numeric IDs
-            r'^[a-f0-9-]{36}$',  # UUIDs
-            r'^[A-Z0-9]{6,}$',  # Mixed alphanumeric codes
-        ]
-        
-        pattern_matches = 0
-        for pattern in id_patterns:
-            matches = str_series.str.match(pattern).sum()
-            pattern_matches = max(pattern_matches, matches)
-        
-        pattern_ratio = pattern_matches / len(str_series)
-        
-        confidence = unique_ratio * 0.7 + pattern_ratio * 0.3
-        
-        if confidence > 0.8:
-            return {
-                'suggested_type': 'object',
-                'confidence': confidence,
-                'rationale': f'High uniqueness ({unique_ratio:.1%}) with ID-like patterns'
-            }
-    
-    return {'suggested_type': 'object', 'confidence': 0.0, 'rationale': 'Not ID-like'}
-
-
-def clean_column_names(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
-    """Clean and standardize column names"""
-    
-    original_columns = df.columns.tolist()
-    mapping = standardize_column_names(original_columns)
-    
-    # Apply mapping
-    df_cleaned = df.rename(columns=mapping)
-    
-    return df_cleaned, mapping
-
-
-def detect_outliers_iqr(series: pd.Series, multiplier: float = 1.5) -> Tuple[np.ndarray, Dict[str, float]]:
-    """Detect outliers using IQR method"""
-    
-    if not pd.api.types.is_numeric_dtype(series):
-        return np.array([]), {}
-    
-    Q1 = series.quantile(0.25)
-    Q3 = series.quantile(0.75)
-    IQR = Q3 - Q1
-    
-    lower_bound = Q1 - multiplier * IQR
-    upper_bound = Q3 + multiplier * IQR
-    
-    outliers = (series < lower_bound) | (series > upper_bound)
-    
-    stats = {
-        'Q1': Q1,
-        'Q3': Q3,
-        'IQR': IQR,
-        'lower_bound': lower_bound,
-        'upper_bound': upper_bound,
-        'outlier_count': outliers.sum(),
-        'outlier_percentage': (outliers.sum() / len(series)) * 100
-    }
-    
-    return outliers, stats
-
-
-def suggest_data_types(df: pd.DataFrame) -> Dict[str, str]:
-    """Suggest optimal data types for DataFrame columns"""
-    
-    suggestions = {}
-    
-    for col in df.columns:
-        current_dtype = df[col].dtype
-        
-        # Skip if already optimal
-        if current_dtype in ['int64', 'float64', 'bool', 'datetime64[ns]', 'category']:
-            suggestions[col] = str(current_dtype)
-            continue
-        
-        # Analyze column and suggest type
-        type_info = detect_column_types(df[[col]])
-        suggestions[col] = type_info[col]['suggested_type']
-    
-    return suggestions
-
-
-def safe_type_conversion(df: pd.DataFrame, type_mapping: Dict[str, str]) -> Tuple[pd.DataFrame, List[str]]:
-    """Safely convert column types with error handling"""
-    
-    df_converted = df.copy()
-    conversion_errors = []
-    
-    for col, target_type in type_mapping.items():
-        if col not in df_converted.columns:
-            continue
-        
-        try:
-            if target_type == 'datetime64[ns]':
-                df_converted[col] = pd.to_datetime(df_converted[col], errors='coerce')
-            elif target_type in ['int64', 'float64']:
-                df_converted[col] = pd.to_numeric(df_converted[col], errors='coerce')
-                if target_type == 'int64':
-                    # Only convert to int if no NaN values after conversion
-                    if df_converted[col].isnull().sum() == 0:
-                        df_converted[col] = df_converted[col].astype('int64')
-            elif target_type == 'bool':
-                # Custom boolean conversion
-                df_converted[col] = df_converted[col].map({
-                    'true': True, 'false': False, 'yes': True, 'no': False,
-                    'y': True, 'n': False, '1': True, '0': False,
-                    'on': True, 'off': False, 'enabled': True, 'disabled': False,
-                    True: True, False: False, 1: True, 0: False
-                })
-            elif target_type == 'category':
-                df_converted[col] = df_converted[col].astype('category')
-                
-        except Exception as e:
-            conversion_errors.append(f"Failed to convert {col} to {target_type}: {str(e)}")
-    
-    return df_converted, conversion_errors
+        else:
+            raise ValueError(f"Unknown sampling method: {method}")
+            
+    except Exception as e:
+        logger.error(f"Sampling failed: {e}")
+        return df.head(sample_rows)  # Fallback to head

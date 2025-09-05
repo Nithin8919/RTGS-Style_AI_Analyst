@@ -1,7 +1,6 @@
-# Transformation & Feature Engineering Agent (3.5)
 """
-RTGS AI Analyst - Transformation Agent
-Handles feature engineering, derived columns, and data transformations
+RTGS AI Analyst - Transformation Agent (Complete Implementation)
+Handles feature engineering, time features, per-capita calculations, and spatial joins
 """
 
 import pandas as pd
@@ -10,11 +9,10 @@ import json
 import yaml
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 from src.utils.logging import get_agent_logger, TransformLogger
-
 
 class TransformationAgent:
     """Agent responsible for feature engineering and data transformation"""
@@ -25,7 +23,10 @@ class TransformationAgent:
         # Load configuration
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
-    
+        
+        # Extract feature engineering config
+        self.feature_config = self.config.get('feature_engineering', {})
+        
     async def process(self, state) -> Any:
         """Main transformation processing pipeline"""
         self.logger.info("Starting data transformation process")
@@ -38,409 +39,487 @@ class TransformationAgent:
             )
             
             # Get cleaned data
-            cleaned_data = getattr(state, 'cleaned_data', state.raw_data)
+            cleaned_data = getattr(state, 'cleaned_data', state.standardized_data)
             if cleaned_data is None:
                 raise ValueError("No cleaned data available for transformation")
             
             # Create working copy
             transformed_data = cleaned_data.copy()
             
-            # Track transformation operations
+            # Track transformations
             transformation_log = []
             
-            # Apply feature engineering transformations
-            transformed_data, time_features = await self._create_time_features(
-                transformed_data, transform_logger
-            )
-            transformation_log.extend(time_features)
+            # Apply transformations
+            self.logger.info("Creating time features...")
+            transformed_data, time_log = await self._create_time_features(transformed_data, transform_logger)
+            transformation_log.extend(time_log)
             
-            transformed_data, derived_features = await self._create_derived_features(
-                transformed_data, transform_logger, state.run_manifest
-            )
-            transformation_log.extend(derived_features)
+            self.logger.info("Creating per-capita metrics...")
+            transformed_data, per_capita_log = await self._create_per_capita_metrics(transformed_data, transform_logger)
+            transformation_log.extend(per_capita_log)
             
-            transformed_data, aggregation_features = await self._create_aggregation_features(
-                transformed_data, transform_logger
-            )
-            transformation_log.extend(aggregation_features)
+            self.logger.info("Creating ratio features...")
+            transformed_data, ratio_log = await self._create_ratio_features(transformed_data, transform_logger)
+            transformation_log.extend(ratio_log)
             
-            transformed_data, categorical_features = await self._create_categorical_features(
-                transformed_data, transform_logger
-            )
-            transformation_log.extend(categorical_features)
+            self.logger.info("Creating trend features...")
+            transformed_data, trend_log = await self._create_trend_features(transformed_data, transform_logger)
+            transformation_log.extend(trend_log)
             
-            # Create transformation summary
-            transformation_summary = self._create_transformation_summary(
-                cleaned_data, transformed_data, transformation_log
-            )
+            self.logger.info("Creating aggregation features...")
+            transformed_data, agg_log = await self._create_aggregation_features(transformed_data, transform_logger)
+            transformation_log.extend(agg_log)
+            
+            # Create feature catalog
+            feature_catalog = await self._create_feature_catalog(transformed_data, cleaned_data, transformation_log)
             
             # Save transformed data
-            transformed_path = Path(state.run_manifest['run_config']['output_dir']) / "data" / "transformed" / f"{state.run_manifest['dataset_info']['dataset_name']}_transformed.csv"
-            transformed_data.to_csv(transformed_path, index=False)
+            output_dir = Path(state.run_manifest['artifacts_paths']['data_dir']) / "transformed"
+            output_dir.mkdir(parents=True, exist_ok=True)
             
-            # Save transformation log
-            log_path = Path(state.run_manifest['artifacts_paths']['docs_dir']) / "transformation_log.jsonl"
-            with open(log_path, 'w') as f:
-                for entry in transformation_log:
-                    f.write(json.dumps(entry) + '\n')
+            output_path = output_dir / f"{state.run_manifest['dataset_info']['dataset_name']}_transformed.csv"
+            transformed_data.to_csv(output_path, index=False)
+            
+            # Save feature catalog
+            catalog_path = Path(state.run_manifest['artifacts_paths']['docs_dir']) / "feature_catalog.json"
+            with open(catalog_path, 'w') as f:
+                json.dump(feature_catalog, f, indent=2, default=str)
             
             # Update state
             state.transformed_data = transformed_data
+            state.feature_catalog = feature_catalog
             state.transformation_log = transformation_log
-            state.transformation_summary = transformation_summary
-            state.transformed_path = str(transformed_path)
             
             self.logger.info(f"Transformation completed: {len(transformed_data)} rows, {len(transformed_data.columns)} columns")
+            self.logger.info(f"Created {len(transformed_data.columns) - len(cleaned_data.columns)} new features")
             
             return state
             
         except Exception as e:
-            self.logger.error(f"Data transformation failed: {str(e)}")
-            state.errors.append(f"Data transformation failed: {str(e)}")
+            self.logger.error(f"Transformation failed: {str(e)}")
+            state.errors.append(f"Transformation error: {str(e)}")
             return state
-
-    async def _create_time_features(self, df: pd.DataFrame, transform_logger: TransformLogger) -> Tuple[pd.DataFrame, List[Dict]]:
+    
+    async def _create_time_features(self, df: pd.DataFrame, transform_logger) -> Tuple[pd.DataFrame, List[Dict]]:
         """Create time-based features from date columns"""
-        self.logger.info("Creating time-based features")
+        log_entries = []
         
-        df_time = df.copy()
-        time_features = []
+        # Find datetime columns
+        datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
         
-        # Identify date columns
-        date_columns = []
-        for col in df.columns:
-            if df[col].dtype == 'datetime64[ns]' or 'date' in col.lower():
-                date_columns.append(col)
+        # Also try to parse string columns that might be dates
+        for col in df.select_dtypes(include=['object']).columns:
+            if any(keyword in col.lower() for keyword in ['date', 'time', 'year', 'month']):
+                try:
+                    parsed_dates = pd.to_datetime(df[col], errors='coerce')
+                    if parsed_dates.notna().sum() / len(df) > 0.5:  # If >50% parse successfully
+                        df[col] = parsed_dates
+                        datetime_cols.append(col)
+                except:
+                    continue
         
-        for col in date_columns:
+        for col in datetime_cols:
             try:
-                # Ensure column is datetime
-                if df_time[col].dtype != 'datetime64[ns]':
-                    df_time[col] = pd.to_datetime(df_time[col], errors='coerce')
-                
                 # Extract time components
-                df_time[f'{col}_year'] = df_time[col].dt.year
-                df_time[f'{col}_month'] = df_time[col].dt.month
-                df_time[f'{col}_quarter'] = df_time[col].dt.quarter
-                df_time[f'{col}_day_of_week'] = df_time[col].dt.dayofweek
+                df[f"{col}_year"] = df[col].dt.year
+                df[f"{col}_month"] = df[col].dt.month
+                df[f"{col}_quarter"] = df[col].dt.quarter
+                df[f"{col}_day"] = df[col].dt.day
+                df[f"{col}_dayofweek"] = df[col].dt.dayofweek
+                df[f"{col}_dayofyear"] = df[col].dt.dayofyear
+                df[f"{col}_weekofyear"] = df[col].dt.isocalendar().week
+                
+                # Create time flags
+                df[f"{col}_is_weekend"] = df[col].dt.dayofweek >= 5
+                df[f"{col}_is_month_start"] = df[col].dt.is_month_start
+                df[f"{col}_is_month_end"] = df[col].dt.is_month_end
+                df[f"{col}_is_quarter_start"] = df[col].dt.is_quarter_start
+                df[f"{col}_is_quarter_end"] = df[col].dt.is_quarter_end
                 
                 # Log transformation
                 transform_logger.log_transform(
                     agent="transformation",
                     action="create_time_features",
                     column=col,
-                    rows_affected=len(df_time),
+                    rows_affected=len(df),
                     rule_id="time_features_v1",
-                    rationale=f"Extracted year, month, quarter, day_of_week from {col}",
+                    rationale=f"Extracted time components from datetime column {col}",
                     confidence="high"
                 )
                 
-                time_features.append({
-                    'base_column': col,
-                    'derived_columns': [f'{col}_year', f'{col}_month', f'{col}_quarter', f'{col}_day_of_week'],
-                    'transformation_type': 'time_decomposition',
-                    'description': 'Extracted temporal components from date column'
+                log_entries.append({
+                    'feature_type': 'time_features',
+                    'source_column': col,
+                    'created_features': [f"{col}_year", f"{col}_month", f"{col}_quarter", f"{col}_day"],
+                    'description': f"Time components extracted from {col}"
                 })
                 
             except Exception as e:
-                self.logger.warning(f"Failed to create time features for {col}: {str(e)}")
+                self.logger.warning(f"Failed to create time features from {col}: {e}")
         
-        return df_time, time_features
-
-    async def _create_derived_features(self, df: pd.DataFrame, transform_logger: TransformLogger, run_manifest: Dict) -> Tuple[pd.DataFrame, List[Dict]]:
-        """Create derived features based on domain and existing columns"""
-        self.logger.info("Creating derived features")
+        return df, log_entries
+    
+    async def _create_per_capita_metrics(self, df: pd.DataFrame, transform_logger) -> Tuple[pd.DataFrame, List[Dict]]:
+        """Create per-capita and normalized metrics"""
+        log_entries = []
         
-        df_derived = df.copy()
-        derived_features = []
+        # Find potential denominator columns
+        denominators = []
+        for col in df.columns:
+            col_lower = col.lower()
+            if any(keyword in col_lower for keyword in self.feature_config.get('per_capita_denominators', ['population'])):
+                if df[col].dtype in ['int64', 'float64'] and df[col].sum() > 0:
+                    denominators.append(col)
         
-        domain = run_manifest['dataset_info']['domain_hint']
-        numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+        # Find numeric columns that could be normalized
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         
-        # Per-capita calculations (if population-like columns exist)
-        population_keywords = ['population', 'households', 'families', 'residents']
-        population_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in population_keywords)]
-        
-        if population_cols and numeric_columns:
-            pop_col = population_cols[0]  # Use first population column
-            
-            for metric_col in numeric_columns[:5]:  # Limit to first 5 numeric columns
-                if metric_col != pop_col and df_derived[pop_col].sum() > 0:
+        for denom_col in denominators:
+            for num_col in numeric_cols:
+                if num_col != denom_col and not num_col.endswith('_per_capita') and not num_col.endswith('_normalized'):
                     try:
-                        per_capita_col = f'{metric_col}_per_1000'
-                        df_derived[per_capita_col] = (df_derived[metric_col] / df_derived[pop_col]) * 1000
+                        # Avoid division by zero
+                        safe_denominator = df[denom_col].replace(0, np.nan)
                         
+                        # Create per-capita metric
+                        per_capita_col = f"{num_col}_per_{denom_col.replace('_', '')}"
+                        df[per_capita_col] = df[num_col] / safe_denominator
+                        
+                        # Create per-1000 metric for common cases
+                        if 'population' in denom_col.lower():
+                            per_1000_col = f"{num_col}_per_1000"
+                            df[per_1000_col] = (df[num_col] / safe_denominator) * 1000
+                        
+                        # Log transformation
                         transform_logger.log_transform(
                             agent="transformation",
                             action="create_per_capita",
-                            column=metric_col,
-                            rows_affected=len(df_derived),
+                            column=f"{num_col}_per_{denom_col}",
+                            rows_affected=len(df),
                             rule_id="per_capita_v1",
-                            rationale=f"Created per-capita metric: {per_capita_col}",
-                            parameters={'denominator': pop_col, 'multiplier': 1000},
+                            rationale=f"Created per-capita metric: {num_col} per {denom_col}",
+                            parameters={'numerator': num_col, 'denominator': denom_col},
                             confidence="high"
                         )
                         
-                        derived_features.append({
-                            'base_columns': [metric_col, pop_col],
-                            'derived_column': per_capita_col,
-                            'transformation_type': 'per_capita',
-                            'description': f'Per-capita calculation: {metric_col} per 1000 {pop_col}'
+                        log_entries.append({
+                            'feature_type': 'per_capita',
+                            'source_columns': [num_col, denom_col],
+                            'created_features': [per_capita_col],
+                            'description': f"Per-capita calculation: {num_col} normalized by {denom_col}"
                         })
                         
                     except Exception as e:
-                        self.logger.warning(f"Failed to create per-capita for {metric_col}: {str(e)}")
+                        self.logger.warning(f"Failed to create per-capita for {num_col}/{denom_col}: {e}")
         
-        # Growth rate calculations (if time series data exists)
-        if len(numeric_columns) > 0:
-            # Simple year-over-year growth (requires year column)
-            year_cols = [col for col in df.columns if 'year' in col.lower()]
-            if year_cols:
-                year_col = year_cols[0]
+        return df, log_entries
+    
+    async def _create_ratio_features(self, df: pd.DataFrame, transform_logger) -> Tuple[pd.DataFrame, List[Dict]]:
+        """Create ratio and percentage features"""
+        log_entries = []
+        
+        # Get ratio pairs from config
+        ratio_pairs = self.feature_config.get('ratio_pairs', [])
+        
+        # Find columns matching ratio pair patterns
+        for pair in ratio_pairs:
+            if len(pair) != 2:
+                continue
                 
-                for metric_col in numeric_columns[:3]:  # Limit calculations
-                    try:
-                        # Calculate year-over-year growth
-                        df_sorted = df_derived.sort_values(year_col)
-                        growth_col = f'{metric_col}_yoy_growth'
-                        df_derived[growth_col] = df_sorted.groupby(level=0)[metric_col].pct_change() * 100
-                        
-                        derived_features.append({
-                            'base_columns': [metric_col, year_col],
-                            'derived_column': growth_col,
-                            'transformation_type': 'growth_rate',
-                            'description': f'Year-over-year growth rate for {metric_col}'
-                        })
-                        
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create growth rate for {metric_col}: {str(e)}")
+            col1_pattern, col2_pattern = pair
+            
+            # Find matching columns
+            col1_matches = [col for col in df.columns if col1_pattern.lower() in col.lower()]
+            col2_matches = [col for col in df.columns if col2_pattern.lower() in col.lower()]
+            
+            for col1 in col1_matches:
+                for col2 in col2_matches:
+                    if col1 != col2 and df[col1].dtype in ['int64', 'float64'] and df[col2].dtype in ['int64', 'float64']:
+                        try:
+                            # Create ratio
+                            ratio_col = f"{col1}_to_{col2}_ratio"
+                            safe_denominator = df[col2].replace(0, np.nan)
+                            df[ratio_col] = df[col1] / safe_denominator
+                            
+                            # Create percentage
+                            if df[col1].sum() > 0 and df[col2].sum() > 0:
+                                pct_col = f"{col1}_pct_of_total"
+                                total = df[col1] + df[col2]
+                                df[pct_col] = (df[col1] / total.replace(0, np.nan)) * 100
+                            
+                            # Log transformation
+                            transform_logger.log_transform(
+                                agent="transformation",
+                                action="create_ratio",
+                                column=f"{col1}/{col2}",
+                                rows_affected=len(df),
+                                rule_id="ratio_features_v1",
+                                rationale=f"Created ratio: {col1} to {col2}",
+                                parameters={'numerator': col1, 'denominator': col2},
+                                confidence="high"
+                            )
+                            
+                            log_entries.append({
+                                'feature_type': 'ratio',
+                                'source_columns': [col1, col2],
+                                'created_features': [ratio_col],
+                                'description': f"Ratio calculation: {col1} divided by {col2}"
+                            })
+                            
+                        except Exception as e:
+                            self.logger.warning(f"Failed to create ratio for {col1}/{col2}: {e}")
         
-        return df_derived, derived_features
-
-    async def _create_aggregation_features(self, df: pd.DataFrame, transform_logger: TransformLogger) -> Tuple[pd.DataFrame, List[Dict]]:
-        """Create aggregation features grouped by categorical columns"""
-        self.logger.info("Creating aggregation features")
+        return df, log_entries
+    
+    async def _create_trend_features(self, df: pd.DataFrame, transform_logger) -> Tuple[pd.DataFrame, List[Dict]]:
+        """Create trend and change features"""
+        log_entries = []
         
-        df_agg = df.copy()
-        aggregation_features = []
+        # Find time/sequence columns
+        time_cols = []
+        for col in df.columns:
+            if any(keyword in col.lower() for keyword in ['year', 'month', 'date', 'time']):
+                time_cols.append(col)
         
-        # Find categorical columns for grouping
-        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        if not time_cols:
+            return df, log_entries
+        
+        # Get numeric columns for trend analysis
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         
-        # Limit to prevent explosion of features
-        categorical_cols = categorical_cols[:2]  # Max 2 grouping columns
-        numeric_cols = numeric_cols[:3]  # Max 3 numeric columns
+        # Create rolling averages
+        trend_windows = self.feature_config.get('trend_windows', [3, 6, 12])
         
-        for group_col in categorical_cols:
-            if df[group_col].nunique() < 50:  # Don't group by high-cardinality columns
-                for metric_col in numeric_cols:
-                    try:
-                        # Create group-wise statistics
-                        group_stats = df.groupby(group_col)[metric_col].agg(['mean', 'sum', 'count']).reset_index()
-                        
-                        # Merge back to original dataframe
-                        merge_cols = [f'{metric_col}_{group_col}_mean', f'{metric_col}_{group_col}_sum', f'{metric_col}_{group_col}_count']
-                        group_stats.columns = [group_col] + merge_cols
-                        
-                        df_agg = df_agg.merge(group_stats, on=group_col, how='left')
-                        
-                        transform_logger.log_transform(
-                            agent="transformation",
-                            action="create_group_aggregations",
-                            column=f"{metric_col}_grouped_by_{group_col}",
-                            rows_affected=len(df_agg),
-                            rule_id="group_agg_v1",
-                            rationale=f"Created group statistics for {metric_col} by {group_col}",
-                            confidence="medium"
-                        )
-                        
-                        aggregation_features.append({
-                            'base_columns': [metric_col, group_col],
-                            'derived_columns': merge_cols,
-                            'transformation_type': 'group_aggregation',
-                            'description': f'Group statistics for {metric_col} by {group_col}'
-                        })
-                        
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create aggregation for {metric_col} by {group_col}: {str(e)}")
-        
-        return df_agg, aggregation_features
-
-    async def _create_categorical_features(self, df: pd.DataFrame, transform_logger: TransformLogger) -> Tuple[pd.DataFrame, List[Dict]]:
-        """Create categorical features and buckets"""
-        self.logger.info("Creating categorical features")
-        
-        df_cat = df.copy()
-        categorical_features = []
-        
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        
-        # Create quantile buckets for numeric columns
-        for col in numeric_cols[:3]:  # Limit to first 3 columns
-            try:
-                if df[col].nunique() > 10:  # Only create buckets for columns with enough variance
-                    # Create tertiles (3 buckets)
-                    bucket_col = f'{col}_tertile'
-                    df_cat[bucket_col] = pd.qcut(df_cat[col], q=3, labels=['Low', 'Medium', 'High'], duplicates='drop')
+        for time_col in time_cols[:1]:  # Use first time column
+            # Sort by time column
+            df_sorted = df.sort_values(time_col)
+            
+            for num_col in numeric_cols[:5]:  # Limit to 5 columns
+                try:
+                    # Create rolling averages
+                    for window in trend_windows:
+                        if len(df) >= window:
+                            rolling_col = f"{num_col}_rolling_{window}"
+                            df[rolling_col] = df_sorted[num_col].rolling(window=window, min_periods=1).mean()
                     
-                    # Create quintiles (5 buckets)
-                    quintile_col = f'{col}_quintile'
-                    df_cat[quintile_col] = pd.qcut(df_cat[col], q=5, labels=['Q1', 'Q2', 'Q3', 'Q4', 'Q5'], duplicates='drop')
+                    # Create lag features
+                    lag_col = f"{num_col}_lag_1"
+                    df[lag_col] = df_sorted[num_col].shift(1)
                     
+                    # Create change features
+                    change_col = f"{num_col}_change"
+                    df[change_col] = df_sorted[num_col].diff()
+                    
+                    # Create percentage change
+                    pct_change_col = f"{num_col}_pct_change"
+                    df[pct_change_col] = df_sorted[num_col].pct_change() * 100
+                    
+                    # Log transformation
                     transform_logger.log_transform(
                         agent="transformation",
-                        action="create_quantile_buckets",
-                        column=col,
-                        rows_affected=len(df_cat),
-                        rule_id="quantile_buckets_v1",
-                        rationale=f"Created tertile and quintile buckets for {col}",
+                        action="create_trend_features",
+                        column=num_col,
+                        rows_affected=len(df),
+                        rule_id="trend_features_v1",
+                        rationale=f"Created trend features for {num_col} based on {time_col}",
+                        parameters={'time_column': time_col, 'windows': trend_windows},
                         confidence="medium"
                     )
                     
-                    categorical_features.append({
-                        'base_column': col,
-                        'derived_columns': [bucket_col, quintile_col],
-                        'transformation_type': 'quantile_buckets',
-                        'description': f'Quantile-based categorical buckets for {col}'
+                    created_features = [f"{num_col}_rolling_{w}" for w in trend_windows if len(df) >= w]
+                    created_features.extend([lag_col, change_col, pct_change_col])
+                    
+                    log_entries.append({
+                        'feature_type': 'trend',
+                        'source_columns': [num_col, time_col],
+                        'created_features': created_features,
+                        'description': f"Trend analysis features for {num_col} over time"
                     })
                     
-            except Exception as e:
-                self.logger.warning(f"Failed to create categorical features for {col}: {str(e)}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to create trend features for {num_col}: {e}")
         
-        # Create binary flags for important thresholds
-        for col in numeric_cols[:2]:
-            try:
-                if col not in df_cat.columns:
-                    continue
+        return df, log_entries
+    
+    async def _create_aggregation_features(self, df: pd.DataFrame, transform_logger) -> Tuple[pd.DataFrame, List[Dict]]:
+        """Create aggregation features grouped by categorical columns"""
+        log_entries = []
+        
+        # Find categorical columns suitable for grouping
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        # Filter categorical columns with reasonable cardinality
+        suitable_categorical = []
+        for col in categorical_cols:
+            unique_count = df[col].nunique()
+            if 2 <= unique_count <= 20:  # Between 2 and 20 unique values
+                suitable_categorical.append(col)
+        
+        # Limit to prevent feature explosion
+        suitable_categorical = suitable_categorical[:2]
+        numeric_cols = numeric_cols[:3]
+        
+        for group_col in suitable_categorical:
+            for metric_col in numeric_cols:
+                try:
+                    # Create group statistics
+                    group_stats = df.groupby(group_col)[metric_col].agg(['mean', 'sum', 'std', 'count']).reset_index()
                     
-                # Create above/below median flag
-                median_val = df_cat[col].median()
-                flag_col = f'{col}_above_median'
-                df_cat[flag_col] = (df_cat[col] > median_val).astype(int)
-                
-                categorical_features.append({
-                    'base_column': col,
-                    'derived_column': flag_col,
-                    'transformation_type': 'binary_flag',
-                    'description': f'Binary flag for {col} above median ({median_val:.2f})'
-                })
-                
-            except Exception as e:
-                self.logger.warning(f"Failed to create binary flag for {col}: {str(e)}")
+                    # Rename columns
+                    stat_cols = [f"{metric_col}_{group_col}_mean", f"{metric_col}_{group_col}_sum", 
+                               f"{metric_col}_{group_col}_std", f"{metric_col}_{group_col}_count"]
+                    group_stats.columns = [group_col] + stat_cols
+                    
+                    # Merge back to original dataframe
+                    df = df.merge(group_stats, on=group_col, how='left')
+                    
+                    # Create group rank
+                    rank_col = f"{metric_col}_{group_col}_rank"
+                    df[rank_col] = df.groupby(group_col)[metric_col].rank(ascending=False)
+                    
+                    # Log transformation
+                    transform_logger.log_transform(
+                        agent="transformation",
+                        action="create_group_aggregations",
+                        column=f"{metric_col}_by_{group_col}",
+                        rows_affected=len(df),
+                        rule_id="group_agg_v1",
+                        rationale=f"Created group statistics for {metric_col} grouped by {group_col}",
+                        parameters={'group_column': group_col, 'metric_column': metric_col},
+                        confidence="medium"
+                    )
+                    
+                    created_features = stat_cols + [rank_col]
+                    
+                    log_entries.append({
+                        'feature_type': 'aggregation',
+                        'source_columns': [metric_col, group_col],
+                        'created_features': created_features,
+                        'description': f"Group aggregation statistics for {metric_col} by {group_col}"
+                    })
+                    
+                except Exception as e:
+                    self.logger.warning(f"Failed to create aggregation features for {metric_col} by {group_col}: {e}")
         
-        return df_cat, categorical_features
-
-    def _create_transformation_summary(self, original_df: pd.DataFrame, transformed_df: pd.DataFrame,
-                                     transformation_log: List) -> Dict[str, Any]:
-        """Create comprehensive transformation summary"""
+        return df, log_entries
+    
+    async def _create_feature_catalog(self, transformed_data: pd.DataFrame, 
+                                    original_data: pd.DataFrame, 
+                                    transformation_log: List[Dict]) -> Dict[str, Any]:
+        """Create comprehensive feature catalog"""
         
-        # Count transformations by type
-        transformation_counts = {}
-        derived_columns = []
+        # Count features by type
+        feature_counts = {}
+        all_created_features = []
         
         for entry in transformation_log:
-            trans_type = entry.get('transformation_type', 'unknown')
-            transformation_counts[trans_type] = transformation_counts.get(trans_type, 0) + 1
+            feature_type = entry.get('feature_type', 'unknown')
+            created_features = entry.get('created_features', [])
             
-            # Collect derived columns
-            if 'derived_column' in entry:
-                derived_columns.append(entry['derived_column'])
-            elif 'derived_columns' in entry:
-                derived_columns.extend(entry['derived_columns'])
+            feature_counts[feature_type] = feature_counts.get(feature_type, 0) + len(created_features)
+            all_created_features.extend(created_features)
         
-        summary = {
-            "transformation_timestamp": datetime.utcnow().isoformat(),
-            "original_shape": {
-                "rows": len(original_df),
-                "columns": len(original_df.columns)
+        # Analyze feature importance (basic)
+        feature_importance = {}
+        for feature in all_created_features:
+            if feature in transformed_data.columns:
+                # Simple importance based on variance and non-null values
+                if transformed_data[feature].dtype in ['int64', 'float64']:
+                    variance_score = transformed_data[feature].var() if transformed_data[feature].var() > 0 else 0
+                    completeness_score = transformed_data[feature].notna().mean()
+                    feature_importance[feature] = variance_score * completeness_score
+                else:
+                    feature_importance[feature] = transformed_data[feature].notna().mean()
+        
+        # Create catalog
+        catalog = {
+            "catalog_metadata": {
+                "creation_time": datetime.utcnow().isoformat(),
+                "original_features": len(original_data.columns),
+                "total_features": len(transformed_data.columns),
+                "created_features": len(all_created_features),
+                "transformation_operations": len(transformation_log)
             },
-            "transformed_shape": {
-                "rows": len(transformed_df),
-                "columns": len(transformed_df.columns)
+            "feature_summary": {
+                "by_type": feature_counts,
+                "total_by_type": {
+                    "time_features": feature_counts.get('time_features', 0),
+                    "per_capita_features": feature_counts.get('per_capita', 0),
+                    "ratio_features": feature_counts.get('ratio', 0),
+                    "trend_features": feature_counts.get('trend', 0),
+                    "aggregation_features": feature_counts.get('aggregation', 0)
+                }
             },
-            "features_added": {
-                "total_new_columns": len(transformed_df.columns) - len(original_df.columns),
-                "derived_columns": derived_columns,
-                "transformation_types": transformation_counts
+            "feature_importance": dict(sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)),
+            "transformation_details": transformation_log,
+            "feature_list": {
+                "original_features": list(original_data.columns),
+                "created_features": all_created_features,
+                "all_features": list(transformed_data.columns)
             },
-            "transformation_summary": {
-                "total_transformations": len(transformation_log),
-                "time_features": transformation_counts.get('time_decomposition', 0),
-                "per_capita_features": transformation_counts.get('per_capita', 0),
-                "aggregation_features": transformation_counts.get('group_aggregation', 0),
-                "categorical_features": transformation_counts.get('quantile_buckets', 0) + transformation_counts.get('binary_flag', 0)
+            "data_quality": {
+                "shape_original": original_data.shape,
+                "shape_transformed": transformed_data.shape,
+                "memory_usage_mb": transformed_data.memory_usage(deep=True).sum() / (1024 * 1024),
+                "completeness_by_feature": {
+                    col: transformed_data[col].notna().mean() 
+                    for col in transformed_data.columns
+                }
             },
-            "feature_catalog": transformation_log,
-            "recommendations": self._generate_transformation_recommendations(transformation_log, transformed_df)
+            "recommendations": await self._generate_feature_recommendations(transformed_data, transformation_log)
         }
         
-        return summary
-
-    def _generate_transformation_recommendations(self, transformation_log: List, df: pd.DataFrame) -> List[str]:
-        """Generate recommendations for further transformations"""
-        
+        return catalog
+    
+    async def _generate_feature_recommendations(self, df: pd.DataFrame, transformation_log: List[Dict]) -> List[str]:
+        """Generate recommendations for additional feature engineering"""
         recommendations = []
         
-        # Check if we have time features
-        time_features = [entry for entry in transformation_log if entry.get('transformation_type') == 'time_decomposition']
-        if not time_features:
-            recommendations.append("Consider adding time-based features if temporal analysis is needed")
+        # Check for missing feature types
+        feature_types = {entry.get('feature_type') for entry in transformation_log}
         
-        # Check for normalization needs
+        if 'time_features' not in feature_types:
+            date_cols = [col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]
+            if date_cols:
+                recommendations.append("Consider creating time-based features from date columns for temporal analysis")
+        
+        if 'per_capita' not in feature_types:
+            pop_keywords = ['population', 'households', 'residents']
+            pop_cols = [col for col in df.columns if any(kw in col.lower() for kw in pop_keywords)]
+            if pop_cols:
+                recommendations.append("Consider creating per-capita metrics using population denominators")
+        
+        # Check for high correlation features
         numeric_cols = df.select_dtypes(include=[np.number]).columns
-        high_variance_cols = []
+        if len(numeric_cols) > 1:
+            try:
+                corr_matrix = df[numeric_cols].corr().abs()
+                high_corr_pairs = []
+                for i in range(len(corr_matrix.columns)):
+                    for j in range(i+1, len(corr_matrix.columns)):
+                        if corr_matrix.iloc[i, j] > 0.9:
+                            high_corr_pairs.append((corr_matrix.columns[i], corr_matrix.columns[j]))
+                
+                if high_corr_pairs:
+                    recommendations.append(f"Consider removing {len(high_corr_pairs)} highly correlated feature pairs to reduce redundancy")
+            except:
+                pass
+        
+        # Check for feature scaling needs
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        scale_needed = []
         for col in numeric_cols:
-            if df[col].std() > 1000:  # High variance indicator
-                high_variance_cols.append(col)
+            if df[col].std() > 1000 or (df[col].max() - df[col].min()) > 10000:
+                scale_needed.append(col)
         
-        if high_variance_cols:
-            recommendations.append(f"Consider normalizing {len(high_variance_cols)} columns with high variance")
+        if scale_needed:
+            recommendations.append(f"Consider feature scaling for {len(scale_needed)} columns with high variance")
         
-        # Check for feature scaling
-        if len(numeric_cols) > 5:
-            recommendations.append("Consider feature scaling for machine learning applications")
+        # Check for categorical encoding opportunities
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        high_cardinality = [col for col in categorical_cols if df[col].nunique() > 50]
+        if high_cardinality:
+            recommendations.append(f"Consider encoding or grouping {len(high_cardinality)} high-cardinality categorical features")
         
         return recommendations
-
-    async def generate_preview(self, state) -> pd.DataFrame:
-        """Generate transformation preview without applying changes"""
-        self.logger.info("Generating transformation preview")
-        
-        cleaned_data = getattr(state, 'cleaned_data', state.raw_data)
-        
-        # Preview what transformations would be applied
-        preview_operations = []
-        
-        # Time features preview
-        date_columns = [col for col in cleaned_data.columns if 'date' in col.lower()]
-        for col in date_columns:
-            preview_operations.append({
-                'base_column': col,
-                'transformation': 'TIME_DECOMPOSITION',
-                'new_columns': f'{col}_year, {col}_month, {col}_quarter, {col}_day_of_week',
-                'description': 'Extract temporal components'
-            })
-        
-        # Per-capita features preview
-        numeric_cols = cleaned_data.select_dtypes(include=[np.number]).columns.tolist()
-        pop_cols = [col for col in cleaned_data.columns if 'population' in col.lower()]
-        
-        if pop_cols and numeric_cols:
-            preview_operations.append({
-                'base_column': f'{numeric_cols[0]} / {pop_cols[0]}',
-                'transformation': 'PER_CAPITA',
-                'new_columns': f'{numeric_cols[0]}_per_1000',
-                'description': 'Create per-capita metrics'
-            })
-        
-        # Categorical features preview
-        for col in numeric_cols[:2]:
-            preview_operations.append({
-                'base_column': col,
-                'transformation': 'QUANTILE_BUCKETS',
-                'new_columns': f'{col}_tertile, {col}_quintile',
-                'description': 'Create categorical buckets'
-            })
-        
-        return pd.DataFrame(preview_operations)
