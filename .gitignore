@@ -132,23 +132,13 @@ dmypy.json
 .pyre/
 
 # RTGS AI Analyst specific
-# Data directories (keep structure but ignore contents)
-data/raw/*
-data/cleaned/*
-data/standardized/*
-data/transformed/*
-!data/raw/.gitkeep
-!data/cleaned/.gitkeep
-!data/standardized/.gitkeep
-!data/transformed/.gitkeep
+# Data directories - completely ignore all data content
+data/
+!data/.gitkeep
 
 # Artifacts - completely ignore all generated content
 artifacts/
 !artifacts/.gitkeep
-!artifacts/logs/.gitkeep
-!artifacts/plots/.gitkeep
-!artifacts/reports/.gitkeep
-!artifacts/docs/.gitkeep
 
 # Configuration files with secrets
 .env

@@ -1,0 +1,2 @@
+# This file ensures the artifacts directory is tracked by git
+# All generated content (logs, plots, reports, docs) is ignored
