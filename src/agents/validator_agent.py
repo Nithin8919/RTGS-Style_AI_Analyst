@@ -1,4 +1,3 @@
-# Validator / QA Agent (3.6)
 """
 RTGS AI Analyst - Validator Agent
 Runs data quality validation gates and calculates confidence scores

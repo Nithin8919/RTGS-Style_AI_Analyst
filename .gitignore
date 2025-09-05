@@ -139,11 +139,9 @@ data/transformed/*
 !data/standardized/.gitkeep
 !data/transformed/.gitkeep
 
-# Artifacts (keep structure but ignore contents)
-artifacts/logs/*
-artifacts/plots/*
-artifacts/reports/*
-artifacts/docs/*
+# Artifacts - completely ignore all generated content
+artifacts/
+!artifacts/.gitkeep
 !artifacts/logs/.gitkeep
 !artifacts/plots/.gitkeep
 !artifacts/reports/.gitkeep
@@ -204,13 +202,36 @@ htmlcov/
 # Memory dumps
 *.dmp
 
-# Large data files
+# Large data files and common artifact formats
 *.csv
 *.xlsx
+*.xls
 *.parquet
 *.feather
 *.json
 *.jsonl
+*.pickle
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+*.npy
+*.npz
+
+# Report and visualization files
+*.html
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.eps
+*.ps
+*.tiff
+*.bmp
+
+# Keep essential config files
 !config.yaml
 !requirements.txt
 !README.md
