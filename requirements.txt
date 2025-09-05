@@ -1,0 +1,125 @@
+# RTGS AI Analyst - Python Dependencies
+
+# Core Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Machine Learning & Statistics
+scikit-learn>=1.3.0
+
+# LLM and AI Framework
+langchain>=0.1.0
+langchain-openai>=0.1.0
+langchain-core>=0.1.0
+langgraph>=0.0.40
+openai>=1.0.0
+
+# Memory and Vector Storage
+llama-index>=0.9.0
+chromadb>=0.4.0  # Optional vector store
+faiss-cpu>=1.7.0  # Optional vector store
+
+# Data Visualization
+plotly>=5.15.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# File Processing
+openpyxl>=3.1.0  # Excel files
+xlrd>=2.0.1      # Legacy Excel files
+chardet>=5.0.0   # Encoding detection
+
+# Configuration and Utilities
+pyyaml>=6.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Async and Concurrency
+aiofiles>=23.0.0
+
+# Optional: Development and Testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+flake8>=6.0.0
+
+# Optional: Enhanced Analytics
+statsmodels>=0.14.0
+pingouin>=0.5.0  # Advanced statistics
+
+# Optional: Text Processing
+nltk>=3.8.0
+spacy>=3.6.0
+
+# Optional: Geographic Data
+geopandas>=0.13.0
+folium>=0.14.0
+
+# Optional: Performance
+polars>=0.18.0  # Fast DataFrame library
+pyarrow>=12.0.0  # Parquet support
+
+# Logging and Monitoring
+structlog>=23.0.0
+
+# Optional: LangSmith (Observability)
+langsmith>=0.1.0
+
+# Web Framework (for future web interface)
+fastapi>=0.100.0
+uvicorn>=0.22.0
+
+# Environment Variables
+python-decouple>=3.8
+
+# Progress Bars
+tqdm>=4.65.0
+
+# Data Quality
+great-expectations>=0.17.0  # Optional advanced data validation
+
+# Memory Management
+psutil>=5.9.0
+
+# Hashing and Utilities
+# hashlib is built-in to Python
+
+# JSON Processing
+jsonschema>=4.17.0
+
+# Date and Time
+python-dateutil>=2.8.0
+
+# HTTP Requests (for data fetching)
+requests>=2.31.0
+httpx>=0.24.0
+
+# Compression
+# gzip and zipfile are built-in to Python
+
+# Optional: Advanced ML
+xgboost>=1.7.0
+lightgbm>=4.0.0
+
+# Optional: Deep Learning (if needed for embeddings)
+torch>=2.0.0
+transformers>=4.30.0
+
+# Optional: Database Support
+sqlalchemy>=2.0.0
+# sqlite3 is built-in to Python
+
+# Optional: Cloud Storage
+boto3>=1.28.0  # AWS S3
+azure-storage-blob>=12.17.0  # Azure Blob
+google-cloud-storage>=2.10.0  # Google Cloud Storage
+
+# Development Dependencies (Optional)
+jupyter>=1.0.0
+ipython>=8.0.0
+pre-commit>=3.0.0
+
+# Note: Some packages might need specific versions based on compatibility
+# Run: pip install -r requirements.txt
+# For development: pip install -r requirements.txt[dev]

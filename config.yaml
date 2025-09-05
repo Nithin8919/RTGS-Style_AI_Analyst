@@ -1,0 +1,202 @@
+# RTGS AI Analyst Configuration
+
+# OpenAI API Configuration
+openai:
+  api_key: ${OPENAI_API_KEY}  # Set as environment variable
+  model: "gpt-4"
+  max_tokens: 1000
+  temperature: 0.1
+
+# Data Processing Thresholds
+data_quality:
+  # Column dropping thresholds
+  drop_column_threshold: 0.95  # Drop if >95% null
+  high_missingness_threshold: 0.30  # Flag as high missingness
+  kpi_missingness_threshold: 0.20  # Critical for KPI columns
+  
+  # Imputation thresholds
+  num_median_impute_threshold: 0.05  # Median impute if <5% null
+  group_impute_threshold: 0.20  # Group impute if <20% null
+  
+  # Outlier detection
+  outlier_iqr_multiplier: 1.5
+  max_auto_drop_rows_percent: 0.01  # Max 1% auto-drop
+  
+  # Type inference confidence
+  low_confidence_type_threshold: 0.6
+  llm_fallback_confidence_range: [0.45, 0.85]
+
+# Statistical Analysis
+statistics:
+  significance_alpha: 0.05
+  effect_size_thresholds:
+    small: 0.2
+    medium: 0.5
+    large: 0.8
+  
+  # Correlation analysis
+  correlation_threshold: 0.6  # Flag correlations above this
+  min_sample_size: 30  # Minimum for statistical tests
+
+# Pipeline Configuration
+pipeline:
+  sample_rows_default: 500
+  chunk_size_large_files: 100000  # Rows per chunk for large files
+  max_memory_usage_mb: 1000  # Memory limit for processing
+  
+  # Retry configuration
+  max_retries: 2
+  retry_delay_seconds: 1
+
+# Output Configuration
+output:
+  # Report formats
+  generate_pdf: true
+  generate_html: true
+  generate_interactive_plots: true
+  
+  # Artifact retention
+  keep_intermediate_files: true
+  compress_large_outputs: false
+
+# Domain-Specific Configurations
+domains:
+  transport:
+    key_metrics: ["registrations", "vehicles", "permits", "licenses"]
+    geo_columns: ["district", "mandal", "village", "zone"]
+    time_columns: ["date", "month", "year", "quarter"]
+    
+  health:
+    key_metrics: ["patients", "cases", "treatments", "facilities"]
+    geo_columns: ["district", "mandal", "phc", "hospital"]
+    time_columns: ["date", "month", "year", "quarter"]
+    
+  education:
+    key_metrics: ["students", "teachers", "schools", "enrollment"]
+    geo_columns: ["district", "mandal", "village", "school"]
+    time_columns: ["academic_year", "month", "quarter"]
+    
+  economics:
+    key_metrics: ["revenue", "expenditure", "budget", "gdp"]
+    geo_columns: ["district", "mandal", "sector"]
+    time_columns: ["financial_year", "quarter", "month"]
+
+# Memory and Caching
+memory:
+  enable_caching: true
+  cache_ttl_hours: 24
+  max_cache_size_mb: 500
+  
+  # LlamaIndex configuration
+  vector_store_type: "simple"  # simple, chroma, faiss
+  embedding_model: "text-embedding-ada-002"
+  chunk_size: 1000
+  chunk_overlap: 200
+
+# Observability
+observability:
+  enable_langsmith: true
+  langsmith_project: "rtgs-ai-analyst"
+  log_level: "INFO"
+  
+  # Performance tracking
+  track_execution_time: true
+  track_memory_usage: true
+  track_api_calls: true
+
+# Security and Privacy
+security:
+  # PII detection patterns
+  pii_patterns:
+    phone: '\b\d{10}\b|\b\d{3}-\d{3}-\d{4}\b'
+    email: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    aadhaar: '\b\d{4}\s\d{4}\s\d{4}\b|\b\d{12}\b'
+  
+  # Data retention
+  auto_delete_raw_data: false
+  data_retention_days: 30
+  
+  # LLM privacy
+  redact_pii_in_llm_calls: true
+  max_sample_size_for_llm: 100
+
+# Column Name Standardization
+standardization:
+  # Common aliases for standard columns
+  column_aliases:
+    # Geographic
+    - aliases: ["dist", "district_name", "district_id"]
+      canonical: "district"
+    - aliases: ["mandal_name", "mandal_id", "sub_district"]
+      canonical: "mandal"
+    - aliases: ["village_name", "village_id", "gram_panchayat"]
+      canonical: "village"
+    
+    # Temporal
+    - aliases: ["reg_date", "registration_date", "created_date"]
+      canonical: "date"
+    - aliases: ["fin_year", "financial_year", "fy"]
+      canonical: "year"
+    
+    # Common metrics
+    - aliases: ["total_count", "count", "number", "qty"]
+      canonical: "total"
+    - aliases: ["amount_rs", "amount_inr", "value_rs"]
+      canonical: "amount"
+
+# Feature Engineering Templates
+feature_engineering:
+  # Per-capita calculations
+  per_capita_denominators: ["population", "households", "families"]
+  per_capita_multipliers: [1000, 10000, 100000]  # per 1k, 10k, 100k
+  
+  # Time-based features
+  time_aggregations: ["daily", "weekly", "monthly", "quarterly", "yearly"]
+  rolling_windows: [3, 6, 12]  # months
+  
+  # Growth calculations
+  growth_periods: ["month_on_month", "quarter_on_quarter", "year_on_year"]
+  
+  # Quantile buckets
+  quantile_buckets: [3, 5, 10]  # tertiles, quintiles, deciles
+
+# Insight Generation
+insights:
+  # Key finding thresholds
+  trend_significance_threshold: 0.05  # p-value for trend detection
+  spatial_inequality_threshold: 0.3   # Coefficient of variation
+  
+  # Policy recommendation confidence
+  high_confidence_threshold: 0.8
+  medium_confidence_threshold: 0.6
+  
+  # LLM prompt templates (will be loaded from separate files)
+  prompt_templates:
+    schema_canonicalization: "prompts/schema_canonicalization.txt"
+    insight_generation: "prompts/insight_generation.txt"
+    policy_recommendations: "prompts/policy_recommendations.txt"
+
+# Validation Gates
+validation_gates:
+  critical:
+    - name: "sufficient_data"
+      description: "Dataset has minimum required rows"
+      threshold: 100
+    - name: "key_columns_present"
+      description: "Essential columns are not entirely missing"
+      threshold: 0.95
+  
+  warning:
+    - name: "high_missingness"
+      description: "No columns with excessive missing values"
+      threshold: 0.5
+    - name: "reasonable_duplicates"
+      description: "Duplicate rate is reasonable"
+      threshold: 0.1
+
+# Development and Testing
+development:
+  debug_mode: false
+  sample_mode: false  # Use small samples for testing
+  mock_llm_calls: false  # Use mock responses instead of real API calls
+  save_intermediate_state: true
