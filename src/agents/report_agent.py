@@ -27,6 +27,9 @@ from src.utils.logging import get_agent_logger
 
 # Import our comprehensive visualization utility
 from src.utils.visualization import GovernmentDataVisualizer
+# Add these imports to your existing imports
+from src.utils.technical_analysis import TechnicalAnalysisDocumenter
+from src.utils.enhanced_policy_prompt import EnhancedPolicyPrompts, PolicyReportIntegration
 
 warnings.filterwarnings('ignore')
 
@@ -496,6 +499,34 @@ class EnhancedReportAgent:
             )
             state.cli_summary = cli_summary
             
+            # Add this AFTER your existing report generation but BEFORE returning state
+            try:
+                # Generate enhanced technical documentation
+                enhanced_technical_path = await self._generate_enhanced_technical_pdf_with_transformations(
+                    state, transformed_data, analysis_results, figures
+                )
+                
+                # Generate enhanced policy insights
+                enhanced_policy_path = await self._generate_enhanced_policy_insights_with_better_prompts(
+                    state, analysis_results
+                )
+                
+                # Add to existing state without breaking anything
+                if not hasattr(state, 'enhanced_reports'):
+                    state.enhanced_reports = {}
+                
+                state.enhanced_reports.update({
+                    'enhanced_technical_documentation': enhanced_technical_path,
+                    'enhanced_policy_insights': enhanced_policy_path,
+                    'enhancement_timestamp': datetime.now().isoformat()
+                })
+                
+                self.logger.info("Enhanced documentation generated successfully")
+                
+            except Exception as e:
+                self.logger.warning(f"Enhanced documentation generation failed: {str(e)}")
+                # Continue with existing functionality - no breaking changes
+
             self.logger.info("LLM-enhanced report assembly completed successfully")
             return state
             
@@ -1436,3 +1467,96 @@ Write for busy executives who need actionable insights.
                 'overall_confidence': 'MEDIUM'
             }
         }
+
+    async def _generate_enhanced_technical_pdf_with_transformations(self, state, df: pd.DataFrame, 
+                                                                  analysis_results: Dict, figures: List) -> str:
+        """NEW METHOD: Generate enhanced technical PDF with complete transformation documentation"""
+        
+        run_manifest = state.run_manifest
+        output_dir = Path(run_manifest['artifacts_paths']['reports_dir'])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate comprehensive technical documentation
+        tech_documenter = TechnicalAnalysisDocumenter()
+        enhanced_technical_content = tech_documenter.generate_comprehensive_technical_report(
+            state, df, analysis_results, figures
+        )
+        
+        # Save enhanced technical report as markdown
+        enhanced_pdf_path = output_dir / f"enhanced_technical_analysis_{run_manifest['run_id']}.md"
+        
+        with open(enhanced_pdf_path, 'w', encoding='utf-8') as f:
+            f.write(enhanced_technical_content)
+        
+        self.logger.info(f"Enhanced technical analysis report created: {enhanced_pdf_path}")
+        return str(enhanced_pdf_path)
+
+    async def _generate_enhanced_policy_insights_with_better_prompts(self, state, analysis_results: Dict) -> str:
+        """NEW METHOD: Generate policy insights using dramatically improved prompts"""
+        
+        try:
+            # Get enhanced prompts
+            dataset_info = state.run_manifest.get('dataset_info', {})
+            state_context = {
+                'total_rows': len(getattr(state, 'transformed_data', [])) if hasattr(state, 'transformed_data') else 0,
+                'confidence_score': getattr(state, 'confidence_score', 3.8),
+                'time_period': 'Current Analysis Period'
+            }
+            
+            enhanced_prompts = EnhancedPolicyPrompts()
+            
+            # Generate executive summary with enhanced prompt
+            executive_prompt = enhanced_prompts.get_executive_summary_prompt(
+                dataset_info, analysis_results, state_context
+            )
+            
+            # Generate detailed insights with enhanced prompt
+            detailed_prompt = enhanced_prompts.get_detailed_insights_prompt(
+                dataset_info, analysis_results, state_context
+            )
+            
+            # Use your existing LLM engine to generate insights
+            enhanced_executive_summary = await self.llm_engine.call_llm(executive_prompt, 3000)
+            enhanced_detailed_insights = await self.llm_engine.call_llm(detailed_prompt, 4000)
+            
+            # Save enhanced policy insights to file
+            run_manifest = state.run_manifest
+            output_dir = Path(run_manifest['artifacts_paths']['reports_dir'])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create comprehensive enhanced policy report
+            enhanced_policy_content = f"""# Enhanced Policy Analysis Report
+
+## Executive Summary (Enhanced AI Analysis)
+{enhanced_executive_summary}
+
+---
+
+## Detailed Policy Insights (Enhanced AI Analysis)
+{enhanced_detailed_insights}
+
+---
+
+## Analysis Metadata
+- **Generation Method**: Enhanced AI Prompts with Policy Focus
+- **Dataset**: {dataset_info.get('dataset_name', 'Unknown')}
+- **Domain**: {dataset_info.get('domain_hint', 'general')}
+- **Scope**: {dataset_info.get('scope', 'Unknown')}
+- **Generated**: {datetime.now().isoformat()}
+- **Prompt Quality**: Enhanced with policy-specific frameworks
+- **Total Records**: {state_context['total_rows']:,}
+- **Confidence Score**: {state_context['confidence_score']}/5.0
+"""
+            
+            # Save enhanced policy report
+            enhanced_policy_path = output_dir / f"enhanced_policy_insights_{run_manifest['run_id']}.md"
+            
+            with open(enhanced_policy_path, 'w', encoding='utf-8') as f:
+                f.write(enhanced_policy_content)
+            
+            self.logger.info(f"Enhanced policy insights report created: {enhanced_policy_path}")
+            return str(enhanced_policy_path)
+            
+        except Exception as e:
+            self.logger.error(f"Enhanced policy insights generation failed: {str(e)}")
+            return f"Enhanced insights generation failed: {str(e)}"
