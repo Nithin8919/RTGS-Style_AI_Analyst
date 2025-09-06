@@ -180,42 +180,58 @@ class InsightAgent:
             return state
 
     async def _prepare_insight_context(self, state, analysis_results: Dict) -> Dict[str, Any]:
-        """Prepare context information for insight generation with safe data access"""
+        """Prepare context information for insight generation with ROBUST data access"""
         
-        run_manifest = state.run_manifest
-        
-        # Safe access to analysis results
-        dataset_profile = analysis_results.get('dataset_profile', {})
-        if isinstance(dataset_profile, str):
-            dataset_profile = {}
-        
-        basic_info = dataset_profile.get('basic_info', {})
-        if isinstance(basic_info, str):
-            basic_info = {}
-        
-        context = {
-            'dataset_info': {
-                'name': run_manifest.get('dataset_info', {}).get('dataset_name', 'Unknown'),
-                'domain': run_manifest.get('dataset_info', {}).get('domain_hint', 'general'),
-                'scope': run_manifest.get('dataset_info', {}).get('scope', 'Unknown'),
-                'description': run_manifest.get('dataset_info', {}).get('description', 'Analysis dataset')
-            },
-            'user_context': run_manifest.get('user_context', {}),
-            'data_characteristics': {
-                'rows': basic_info.get('rows', 0),
-                'columns': basic_info.get('columns', 0),
-                'analysis_quality': analysis_results.get('quality_assessment', {}).get('overall_score', 'unknown')
-            },
-            'analysis_summary': {
-                'kpis_analyzed': len(self._safe_get_list(analysis_results, 'kpis')),
-                'trends_identified': len(self._safe_get_list(analysis_results, 'trends')),
-                'correlations_found': len(self._safe_get_list(analysis_results, 'correlations')),
-                'spatial_patterns': bool(analysis_results.get('spatial_analysis', {})),
-                'hypothesis_tests': len(self._safe_get_list(analysis_results, 'hypothesis_tests'))
+        try:
+            run_manifest = state.run_manifest
+            
+            # FIXED: Safe access to analysis results with fallbacks
+            if isinstance(analysis_results, str):
+                try:
+                    analysis_results = json.loads(analysis_results)
+                except (json.JSONDecodeError, TypeError):
+                    analysis_results = {}
+            elif analysis_results is None:
+                analysis_results = {}
+            
+            # Safe access to dataset profile
+            dataset_profile = analysis_results.get('dataset_profile', {})
+            if isinstance(dataset_profile, str):
+                dataset_profile = {}
+            
+            basic_info = dataset_profile.get('basic_info', {})
+            if isinstance(basic_info, str):
+                basic_info = {}
+            
+            # FIXED: Robust context building with defaults
+            context = {
+                'dataset_info': {
+                    'name': run_manifest.get('dataset_info', {}).get('dataset_name', 'Unknown'),
+                    'domain': run_manifest.get('dataset_info', {}).get('domain_hint', 'general'),
+                    'scope': run_manifest.get('dataset_info', {}).get('scope', 'Unknown'),
+                    'description': run_manifest.get('dataset_info', {}).get('description', 'Analysis dataset')
+                },
+                'user_context': run_manifest.get('user_context', {}),
+                'data_characteristics': {
+                    'rows': basic_info.get('rows', 0),
+                    'columns': basic_info.get('columns', 0),
+                    'analysis_quality': self._safe_get_quality_score(analysis_results)
+                },
+                'analysis_summary': {
+                    'kpis_analyzed': len(self._safe_get_list(analysis_results, 'kpis')),
+                    'trends_identified': len(self._safe_get_list(analysis_results, 'trends')),
+                    'correlations_found': len(self._safe_get_list(analysis_results, 'correlations')),
+                    'spatial_patterns': bool(analysis_results.get('spatial_analysis', {})),
+                    'hypothesis_tests': len(self._safe_get_list(analysis_results, 'hypothesis_tests'))
+                }
             }
-        }
-        
-        return context
+            
+            return context
+            
+        except Exception as e:
+            self.logger.error(f"Context preparation failed: {str(e)}")
+            # Return minimal context to prevent complete failure
+            return self._create_fallback_context(state)
 
     async def _generate_key_findings(self, analysis_results: Dict, context: Dict) -> List[Dict[str, Any]]:
         """Generate key findings from statistical analysis using LLM"""
@@ -321,47 +337,282 @@ Generate 3-5 key policy findings based on this evidence."""
             return self._generate_fallback_findings(evidence, context)
 
     def _extract_statistical_evidence(self, analysis_results: Dict) -> Dict[str, Any]:
-        """Extract key statistical evidence for LLM consumption"""
+        """Extract key statistical evidence for LLM consumption with ROBUST data access"""
         
-        evidence = {}
-        
-        # Top KPIs by domain relevance
-        kpis = analysis_results.get('kpis', [])
-        evidence['top_kpis'] = sorted(kpis, key=lambda x: (
-            x.get('domain_relevance') == 'high',
-            -x.get('data_quality', {}).get('missing_percentage', 100),
-            x.get('sample_size', 0)
-        ), reverse=True)[:5]
-        
-        # Significant trends
-        trends = analysis_results.get('trends', [])
-        evidence['significant_trends'] = [
-            t for t in trends 
-            if t.get('trend_analysis', {}).get('is_significant', False)
-        ][:3]
-        
-        # Spatial patterns with high inequality
-        spatial = analysis_results.get('spatial_analysis', {})
-        evidence['spatial_patterns'] = {
-            metric: data for metric, data in spatial.items()
-            if data.get('inequality_measures', {}).get('inequality_level') in ['high', 'medium']
+        evidence = {
+            'top_kpis': [],
+            'significant_trends': [],
+            'spatial_patterns': {},
+            'significant_correlations': [],
+            'significant_tests': []
         }
         
-        # Significant correlations
-        correlations = analysis_results.get('correlations', [])
-        evidence['significant_correlations'] = [
-            c for c in correlations 
-            if c.get('is_significant', False)
-        ][:5]
+        try:
+            # FIXED: Ensure analysis_results is properly formatted
+            if isinstance(analysis_results, str):
+                try:
+                    analysis_results = json.loads(analysis_results)
+                except (json.JSONDecodeError, TypeError):
+                    self.logger.warning("Analysis results is string but not valid JSON")
+                    return evidence
+            elif analysis_results is None:
+                self.logger.warning("Analysis results is None")
+                return evidence
+            
+            # FIXED: Safe KPI extraction with multiple fallback paths
+            kpis_data = analysis_results.get('kpis', {})
+            if isinstance(kpis_data, dict):
+                # Try multiple possible structures
+                numeric_summary = kpis_data.get('numeric_summary', {})
+                if isinstance(numeric_summary, dict) and numeric_summary:
+                    for col_name, stats in numeric_summary.items():
+                        if isinstance(stats, dict) and isinstance(stats.get('mean'), (int, float)):
+                            evidence['top_kpis'].append({
+                                'metric_name': col_name,
+                                'statistics': stats,
+                                'domain_relevance': 'high',
+                                'sample_size': stats.get('count', 0),
+                                'data_quality': {'missing_percentage': 0}  # Default
+                            })
+                else:
+                    # Alternative structure: direct KPI list
+                    kpi_list = kpis_data.get('kpi_list', [])
+                    if isinstance(kpi_list, list):
+                        evidence['top_kpis'] = kpi_list[:5]
+            
+            # FIXED: Safe trends extraction with multiple structure support
+            trends_data = analysis_results.get('trends', {})
+            if isinstance(trends_data, dict):
+                # Try linear_trends structure
+                linear_trends = trends_data.get('linear_trends', {})
+                if isinstance(linear_trends, dict):
+                    for metric, trend_info in linear_trends.items():
+                        if isinstance(trend_info, dict) and trend_info.get('statistical_significance'):
+                            evidence['significant_trends'].append({
+                                'metric': metric,
+                                'trend_analysis': {
+                                    'direction': trend_info.get('trend_direction', 'unknown'),
+                                    'strength': abs(trend_info.get('slope', 0)),
+                                    'significance': trend_info.get('p_value', 1),
+                                    'is_significant': trend_info.get('statistical_significance', False)
+                                }
+                            })
+                
+                # Alternative: direct trends list
+                trends_list = trends_data.get('trend_list', [])
+                if isinstance(trends_list, list):
+                    for trend in trends_list:
+                        if isinstance(trend, dict) and trend.get('is_significant'):
+                            evidence['significant_trends'].append(trend)
+            
+            # FIXED: Safe correlations extraction
+            correlations_data = analysis_results.get('correlations', {})
+            if isinstance(correlations_data, dict):
+                # Try significant_correlations structure
+                significant_correlations = correlations_data.get('significant_correlations', [])
+                if isinstance(significant_correlations, list):
+                    for corr in significant_correlations[:5]:
+                        if isinstance(corr, dict):
+                            evidence['significant_correlations'].append({
+                                'variable_1': corr.get('variable_1', 'Unknown'),
+                                'variable_2': corr.get('variable_2', 'Unknown'),
+                                'correlation_coefficient': corr.get('pearson_r', corr.get('correlation', 0)),
+                                'correlation_direction': 'positive' if corr.get('pearson_r', corr.get('correlation', 0)) > 0 else 'negative',
+                                'is_significant': corr.get('pearson_significant', corr.get('significant', False))
+                            })
+                
+                # Alternative: correlation_matrix structure
+                correlation_matrix = correlations_data.get('correlation_matrix', {})
+                if isinstance(correlation_matrix, dict):
+                    # Extract strong correlations from matrix
+                    strong_pairs = correlation_matrix.get('strong_correlations', [])
+                    if isinstance(strong_pairs, list):
+                        evidence['significant_correlations'].extend(strong_pairs[:5])
+            
+            # FIXED: Safe spatial patterns extraction
+            spatial_data = analysis_results.get('spatial_analysis', {})
+            if isinstance(spatial_data, dict):
+                regional_comparisons = spatial_data.get('regional_comparisons', {})
+                if isinstance(regional_comparisons, dict):
+                    for metric, comparison_data in regional_comparisons.items():
+                        if isinstance(comparison_data, dict):
+                            inequality_metrics = comparison_data.get('inequality_metrics', {})
+                            if isinstance(inequality_metrics, dict):
+                                gini = inequality_metrics.get('gini_coefficient', 0)
+                                if isinstance(gini, (int, float)):
+                                    evidence['spatial_patterns'][metric] = {
+                                        'inequality_measures': {
+                                            'gini_coefficient': gini,
+                                            'inequality_level': 'high' if gini > 0.4 else 'medium' if gini > 0.25 else 'low'
+                                        },
+                                        'top_performing_areas': comparison_data.get('top_areas', {}),
+                                        'bottom_performing_areas': comparison_data.get('bottom_areas', {})
+                                    }
+            
+            # FIXED: Safe hypothesis tests extraction
+            hypothesis_data = analysis_results.get('hypothesis_tests', {})
+            if isinstance(hypothesis_data, dict):
+                group_comparisons = hypothesis_data.get('group_comparisons', [])
+                if isinstance(group_comparisons, list):
+                    for test in group_comparisons[:3]:
+                        if isinstance(test, dict) and test.get('significant'):
+                            evidence['significant_tests'].append({
+                                'dependent_variable': test.get('test_variable', test.get('variable', 'Unknown')),
+                                'group_1': {'name': test.get('group1_name', 'Group1')},
+                                'group_2': {'name': test.get('group2_name', 'Group2')},
+                                'test_statistics': {
+                                    'p_value': test.get('p_value', 1),
+                                    'is_significant': test.get('significant', False)
+                                },
+                                'effect_size': {
+                                    'interpretation': test.get('effect_size_interpretation', 'unknown')
+                                }
+                            })
+                
+                # Alternative: individual test results
+                test_results = hypothesis_data.get('test_results', [])
+                if isinstance(test_results, list):
+                    evidence['significant_tests'].extend([
+                        t for t in test_results if isinstance(t, dict) and t.get('significant')
+                    ][:3])
         
-        # Significant hypothesis tests
-        tests = analysis_results.get('hypothesis_tests', [])
-        evidence['significant_tests'] = [
-            t for t in tests 
-            if t.get('test_statistics', {}).get('is_significant', False)
-        ][:3]
+        except Exception as e:
+            self.logger.error(f"Evidence extraction failed: {str(e)}")
+            # Return empty evidence rather than failing completely
+        
+        # Ensure we have some content even if extraction partially failed
+        if not any(evidence.values()):
+            self.logger.warning("No statistical evidence extracted, creating minimal evidence")
+            evidence['top_kpis'] = [{'metric_name': 'dataset_analysis', 'statistics': {'mean': 0}}]
         
         return evidence
+
+    def _safe_get_quality_score(self, analysis_results: Dict) -> str:
+        """Safely extract quality score with fallbacks"""
+        try:
+            quality_assessment = analysis_results.get('quality_assessment', {})
+            if isinstance(quality_assessment, dict):
+                return quality_assessment.get('overall_score', 'unknown')
+            return 'unknown'
+        except:
+            return 'unknown'
+
+    def _safe_get_list(self, data: Dict, key: str) -> List:
+        """Safely get a list from dictionary with ENHANCED error handling"""
+        try:
+            value = data.get(key, [])
+            if isinstance(value, list):
+                return value
+            elif isinstance(value, dict):
+                # If it's a dict, try to extract lists from common keys
+                if 'items' in value:
+                    items = value['items']
+                    return items if isinstance(items, list) else []
+                elif 'results' in value:
+                    results = value['results']
+                    return results if isinstance(results, list) else []
+                else:
+                    # Return list of dict values
+                    return list(value.values()) if value else []
+            else:
+                return []
+        except Exception:
+            return []
+
+    def _create_fallback_context(self, state) -> Dict:
+        """Create fallback context when context preparation fails"""
+        try:
+            run_manifest = state.run_manifest
+            return {
+                'dataset_info': {
+                    'name': run_manifest.get('dataset_info', {}).get('dataset_name', 'Unknown'),
+                    'domain': run_manifest.get('dataset_info', {}).get('domain_hint', 'general'),
+                    'scope': run_manifest.get('dataset_info', {}).get('scope', 'Unknown'),
+                    'description': 'Analysis dataset'
+                },
+                'user_context': {},
+                'data_characteristics': {
+                    'rows': 0,
+                    'columns': 0,
+                    'analysis_quality': 'unknown'
+                },
+                'analysis_summary': {
+                    'kpis_analyzed': 0,
+                    'trends_identified': 0,
+                    'correlations_found': 0,
+                    'spatial_patterns': False,
+                    'hypothesis_tests': 0
+                }
+            }
+        except Exception:
+            return {
+                'dataset_info': {'name': 'Unknown', 'domain': 'general', 'scope': 'Unknown', 'description': 'Analysis dataset'},
+                'user_context': {},
+                'data_characteristics': {'rows': 0, 'columns': 0, 'analysis_quality': 'unknown'},
+                'analysis_summary': {'kpis_analyzed': 0, 'trends_identified': 0, 'correlations_found': 0, 'spatial_patterns': False, 'hypothesis_tests': 0}
+            }
+
+    def _create_minimal_analysis(self, raw_data) -> Dict:
+        """Create minimal analysis from raw data when analysis results are NOT available"""
+        if raw_data is None:
+            return {}
+        
+        try:
+            # Handle both DataFrame and other data types
+            if hasattr(raw_data, 'select_dtypes'):  # DataFrame-like
+                numeric_cols = raw_data.select_dtypes(include=[np.number]).columns
+                
+                minimal_analysis = {
+                    'dataset_profile': {
+                        'basic_info': {
+                            'rows': len(raw_data),
+                            'columns': len(raw_data.columns)
+                        }
+                    },
+                    'kpis': {
+                        'numeric_summary': {}
+                    },
+                    'quality_assessment': {
+                        'overall_score': 50
+                    },
+                    'analysis_metadata': {
+                        'created_from': 'raw_data_fallback',
+                        'timestamp': datetime.utcnow().isoformat()
+                    }
+                }
+                
+                # Add basic stats for numeric columns
+                for col in numeric_cols[:5]:  # Limit to 5 columns
+                    try:
+                        col_data = raw_data[col].dropna()
+                        if len(col_data) > 0:
+                            minimal_analysis['kpis']['numeric_summary'][col] = {
+                                'count': int(len(col_data)),
+                                'mean': float(col_data.mean()),
+                                'std': float(col_data.std()),
+                                'min': float(col_data.min()),
+                                'max': float(col_data.max())
+                            }
+                    except Exception:
+                        continue
+                
+                return minimal_analysis
+            else:
+                # Non-DataFrame data
+                return {
+                    'dataset_profile': {'basic_info': {'rows': 0, 'columns': 0}},
+                    'kpis': {'numeric_summary': {}},
+                    'quality_assessment': {'overall_score': 30}
+                }
+                
+        except Exception as e:
+            self.logger.warning(f"Minimal analysis creation failed: {str(e)}")
+            return {
+                'dataset_profile': {'basic_info': {'rows': 0, 'columns': 0}},
+                'kpis': {'numeric_summary': {}},
+                'quality_assessment': {'overall_score': 30},
+                'error': str(e)
+            }
 
     def _format_business_questions(self, context: Dict) -> str:
         """Format business questions for LLM context"""
@@ -787,207 +1038,6 @@ Create executive summary for senior officials."""
                 return finding.get('confidence', 'MEDIUM')
         
         return 'MEDIUM'  # Default
-    
-    def _extract_statistical_evidence(self, analysis_results: Dict) -> Dict[str, Any]:
-        """Extract key statistical evidence for LLM consumption with safe data access"""
-        
-        evidence = {
-            'top_kpis': [],
-            'significant_trends': [],
-            'spatial_patterns': {},
-            'significant_correlations': [],
-            'significant_tests': []
-        }
-        
-        try:
-            # Safe KPI extraction
-            kpis_data = analysis_results.get('kpis', {})
-            if isinstance(kpis_data, dict):
-                numeric_summary = kpis_data.get('numeric_summary', {})
-                if isinstance(numeric_summary, dict):
-                    for col_name, stats in numeric_summary.items():
-                        if isinstance(stats, dict) and isinstance(stats.get('mean'), (int, float)):
-                            evidence['top_kpis'].append({
-                                'metric_name': col_name,
-                                'statistics': stats,
-                                'domain_relevance': 'high',  # Default
-                                'sample_size': stats.get('count', 0)
-                            })
-            
-            # Safe trends extraction
-            trends_data = analysis_results.get('trends', {})
-            if isinstance(trends_data, dict):
-                linear_trends = trends_data.get('linear_trends', {})
-                if isinstance(linear_trends, dict):
-                    for metric, trend_info in linear_trends.items():
-                        if isinstance(trend_info, dict) and trend_info.get('statistical_significance'):
-                            evidence['significant_trends'].append({
-                                'metric': metric,
-                                'trend_analysis': {
-                                    'direction': trend_info.get('trend_direction', 'unknown'),
-                                    'strength': abs(trend_info.get('slope', 0)),
-                                    'significance': trend_info.get('p_value', 1),
-                                    'is_significant': trend_info.get('statistical_significance', False)
-                                }
-                            })
-            
-            # Safe correlations extraction
-            correlations_data = analysis_results.get('correlations', {})
-            if isinstance(correlations_data, dict):
-                significant_correlations = correlations_data.get('significant_correlations', [])
-                if isinstance(significant_correlations, list):
-                    for corr in significant_correlations[:5]:
-                        if isinstance(corr, dict):
-                            evidence['significant_correlations'].append({
-                                'variable_1': corr.get('variable_1', 'Unknown'),
-                                'variable_2': corr.get('variable_2', 'Unknown'),
-                                'correlation_coefficient': corr.get('pearson_r', 0),
-                                'correlation_direction': 'positive' if corr.get('pearson_r', 0) > 0 else 'negative',
-                                'is_significant': corr.get('pearson_significant', False)
-                            })
-            
-            # Safe spatial patterns extraction
-            spatial_data = analysis_results.get('spatial_analysis', {})
-            if isinstance(spatial_data, dict):
-                regional_comparisons = spatial_data.get('regional_comparisons', {})
-                if isinstance(regional_comparisons, dict):
-                    for metric, comparison_data in regional_comparisons.items():
-                        if isinstance(comparison_data, dict):
-                            inequality_metrics = comparison_data.get('inequality_metrics', {})
-                            if isinstance(inequality_metrics, dict):
-                                gini = inequality_metrics.get('gini_coefficient', 0)
-                                evidence['spatial_patterns'][metric] = {
-                                    'inequality_measures': {
-                                        'gini_coefficient': gini,
-                                        'inequality_level': 'high' if gini > 0.4 else 'medium' if gini > 0.25 else 'low'
-                                    },
-                                    'top_performing_areas': {},
-                                    'bottom_performing_areas': {}
-                                }
-            
-            # Safe hypothesis tests extraction
-            hypothesis_data = analysis_results.get('hypothesis_tests', {})
-            if isinstance(hypothesis_data, dict):
-                group_comparisons = hypothesis_data.get('group_comparisons', [])
-                if isinstance(group_comparisons, list):
-                    for test in group_comparisons[:3]:
-                        if isinstance(test, dict) and test.get('significant'):
-                            evidence['significant_tests'].append({
-                                'dependent_variable': test.get('test_variable', 'Unknown'),
-                                'group_1': {'name': 'Group1'},
-                                'group_2': {'name': 'Group2'},
-                                'test_statistics': {
-                                    'p_value': test.get('p_value', 1),
-                                    'is_significant': test.get('significant', False)
-                                },
-                                'effect_size': {
-                                    'interpretation': test.get('effect_size_interpretation', 'unknown')
-                                }
-                            })
-        
-        except Exception as e:
-            self.logger.warning(f"Evidence extraction failed: {str(e)}")
-        
-        return evidence
-    
-    def _safe_get_list(self, data: Dict, key: str) -> List:
-        """Safely get a list from dictionary"""
-        value = data.get(key, [])
-        if isinstance(value, list):
-            return value
-        elif isinstance(value, dict):
-            return list(value.values()) if value else []
-        else:
-            return []
-
-    def _safe_get_dict(self, data: Dict, key: str) -> Dict:
-        """Safely get a dictionary from dictionary"""
-        value = data.get(key, {})
-        return value if isinstance(value, dict) else {}
-
-    def _create_minimal_analysis(self, raw_data) -> Dict:
-        """Create minimal analysis from raw data when analysis results are not available"""
-        if raw_data is None:
-            return {}
-        
-        try:
-            numeric_cols = raw_data.select_dtypes(include=[np.number]).columns
-            
-            minimal_analysis = {
-                'dataset_profile': {
-                    'basic_info': {
-                        'rows': len(raw_data),
-                        'columns': len(raw_data.columns)
-                    }
-                },
-                'kpis': {
-                    'numeric_summary': {}
-                },
-                'quality_assessment': {
-                    'overall_score': 50
-                }
-            }
-            
-            # Add basic stats for numeric columns
-            for col in numeric_cols[:5]:  # Limit to 5 columns
-                try:
-                    col_data = raw_data[col].dropna()
-                    if len(col_data) > 0:
-                        minimal_analysis['kpis']['numeric_summary'][col] = {
-                            'count': int(len(col_data)),
-                            'mean': float(col_data.mean()),
-                            'std': float(col_data.std()),
-                            'min': float(col_data.min()),
-                            'max': float(col_data.max())
-                        }
-                except:
-                    continue
-            
-            return minimal_analysis
-            
-        except Exception as e:
-            self.logger.warning(f"Minimal analysis creation failed: {str(e)}")
-            return {
-                'dataset_profile': {'basic_info': {'rows': 0, 'columns': 0}},
-                'kpis': {},
-                'quality_assessment': {'overall_score': 30}
-            }
-
-    def _create_fallback_context(self, state) -> Dict:
-        """Create fallback context when normal context preparation fails"""
-        run_manifest = state.run_manifest
-        
-        return {
-            'dataset_info': {
-                'name': run_manifest.get('dataset_info', {}).get('dataset_name', 'Unknown Dataset'),
-                'domain': run_manifest.get('dataset_info', {}).get('domain_hint', 'general'),
-                'scope': run_manifest.get('dataset_info', {}).get('scope', 'Unknown Scope'),
-                'description': 'Dataset analysis with limited context'
-            },
-            'data_characteristics': {
-                'rows': 0,
-                'columns': 0,
-                'analysis_quality': 'limited'
-            },
-            'analysis_summary': {
-                'kpis_analyzed': 0,
-                'trends_identified': 0,
-                'correlations_found': 0,
-                'spatial_patterns': False,
-                'hypothesis_tests': 0
-            }
-        }
-
-    def _generate_fallback_summary(self, context: Dict) -> Dict:
-        """Generate fallback executive summary"""
-        return {
-            'one_line_summary': f"Analysis of {context['dataset_info']['name']} provides insights for {context['dataset_info']['domain']} policy",
-            'key_insights_summary': 'Statistical analysis completed with limited data processing',
-            'priority_actions': 'Review data quality and consider additional data collection',
-            'overall_assessment': 'Analysis completed with constraints',
-            'findings_count': 0,
-            'recommendations_count': 0
-        }
 
     def _generate_fallback_narrative(self) -> Dict:
         """Generate fallback statistical narrative"""
@@ -1007,16 +1057,4 @@ Create executive summary for senior officials."""
                 'overall_reliability': 'MEDIUM'
             }
         }
-        
-    def _generate_fallback_recommendations(self, key_findings: List, context: Dict) -> List[Dict]:
-        """Generate fallback recommendations when LLM fails"""
-        return [
-            {
-                'id': 'rec_1',
-                'recommendation': f"Review data quality for {context['dataset_info']['domain']} analysis",
-                'priority': 'HIGH',
-                'rationale': 'Ensure data completeness and accuracy for better insights',
-                'implementation_timeframe': 'Short-term',
-                'estimated_impact': 'MEDIUM'
-            }
-        ]
+    

@@ -93,7 +93,7 @@ class LLMAnalysisEngine:
 DATASET CONTEXT:
 - Domain: {domain}
 - Scope: {scope}
-- Data Summary: {json.dumps(df_summary, indent=2)}
+- Data Summary: {json.dumps(df_summary, indent=2, default=str)}
 
 ANALYSIS TASK:
 Analyze the data patterns and provide comprehensive insights. Focus on:
@@ -160,8 +160,8 @@ Provide analysis that is:
 ANALYSIS CONTEXT:
 - Domain: {domain}
 - Geographic Scope: {context.get('scope', 'Regional')}
-- Data Insights: {json.dumps(data_insights, indent=2)}
-- Statistical Results: {json.dumps(statistical_results, indent=2)}
+- Data Insights: {json.dumps(data_insights, indent=2, default=str)}
+- Statistical Results: {json.dumps(statistical_results, indent=2, default=str)}
 
 POLICY TASK:
 Generate comprehensive, actionable policy recommendations that are:
@@ -219,7 +219,7 @@ Make recommendations grounded in the specific data evidence provided and tailore
         prompt = f"""You are a senior statistician and policy analyst specializing in {domain} sector analysis.
 
 STATISTICAL RESULTS:
-{json.dumps(stats_results, indent=2)}
+{json.dumps(stats_results, indent=2, default=str)}
 
 INTERPRETATION TASK:
 Provide a comprehensive interpretation of these statistical results for government policymakers. Focus on:
@@ -287,8 +287,8 @@ Provide interpretations that are:
 
 DATA CONTEXT:
 - Domain: {domain}
-- Data Summary: {json.dumps(df_summary, indent=2)}
-- Analysis Results: {json.dumps(analysis_results, indent=2)}
+- Data Summary: {json.dumps(df_summary, indent=2, default=str)}
+- Analysis Results: {json.dumps(analysis_results, indent=2, default=str)}
 
 EXPERT ANALYSIS TASK:
 Apply your deep {domain} domain expertise to provide insights that only a sector specialist would identify. Focus on:
@@ -341,7 +341,7 @@ Provide insights that demonstrate deep {domain} sector expertise and are immedia
         prompt = f"""You are a senior government communications specialist and policy writer, expert at translating complex analysis into compelling narratives for senior government officials.
 
 INSIGHTS TO SYNTHESIZE:
-{json.dumps(all_insights, indent=2)}
+{json.dumps(all_insights, indent=2, default=str)}
 
 CONTEXT:
 - Domain: {domain}
@@ -403,6 +403,12 @@ class EnhancedReportAgent:
         try:
             # Extract data safely
             insights = getattr(state, 'insights', {}) or {}
+            # Ensure insights is a dictionary, not a string
+            if isinstance(insights, str):
+                try:
+                    insights = json.loads(insights)
+                except (json.JSONDecodeError, TypeError):
+                    insights = {}
             analysis_results = getattr(state, 'analysis_results', {})
             transformed_data = getattr(state, 'transformed_data', pd.DataFrame())
             
@@ -499,105 +505,165 @@ class EnhancedReportAgent:
             return await self._create_fallback_reports(state)
 
     async def _prepare_data_summary(self, df: pd.DataFrame, analysis_results: Dict) -> Dict:
-        """Prepare comprehensive data summary for LLM analysis"""
+        """Prepare comprehensive data summary for LLM analysis - FIXED VERSION"""
         
-        if df.empty:
+        if df is None or df.empty:
             return {"error": "No data available for analysis"}
         
-        summary = {
-            "dataset_overview": {
-                "rows": len(df),
-                "columns": len(df.columns),
-                "numeric_columns": len(df.select_dtypes(include=[np.number]).columns),
-                "categorical_columns": len(df.select_dtypes(include=['object']).columns),
-                "date_columns": len(df.select_dtypes(include=['datetime']).columns)
-            },
-            "data_quality": {
-                "missing_data_percentage": float(df.isnull().sum().sum() / (len(df) * len(df.columns)) * 100),
-                "columns_with_missing_data": df.columns[df.isnull().sum() > 0].tolist(),
-                "missing_data_by_column": {col: float(df[col].isnull().sum() / len(df) * 100) 
-                                         for col in df.columns if df[col].isnull().sum() > 0}
-            },
-            "numerical_summary": {},
-            "categorical_summary": {},
-            "key_relationships": {}
-        }
-        
-        # Numerical summary (limit for LLM efficiency)
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        for col in numeric_cols[:10]:
-            col_data = df[col].dropna()
-            if len(col_data) > 0:
-                summary["numerical_summary"][col] = {
-                    "mean": float(col_data.mean()),
-                    "median": float(col_data.median()),
-                    "std": float(col_data.std()),
-                    "min": float(col_data.min()),
-                    "max": float(col_data.max()),
-                    "outlier_count": int(((col_data < (col_data.quantile(0.25) - 1.5 * (col_data.quantile(0.75) - col_data.quantile(0.25)))) | 
-                                        (col_data > (col_data.quantile(0.75) + 1.5 * (col_data.quantile(0.75) - col_data.quantile(0.25))))).sum())
-                }
-        
-        # Categorical summary (limit for efficiency)
-        categorical_cols = df.select_dtypes(include=['object']).columns
-        for col in categorical_cols[:8]:
-            col_data = df[col].dropna()
-            if len(col_data) > 0:
-                value_counts = col_data.value_counts()
-                summary["categorical_summary"][col] = {
-                    "unique_values": int(col_data.nunique()),
-                    "most_common": value_counts.head(5).to_dict(),
-                    "concentration_ratio": float(value_counts.iloc[0] / len(col_data)) if len(value_counts) > 0 else 0
-                }
-        
-        # Key relationships (correlations)
-        if len(numeric_cols) >= 2:
-            corr_matrix = df[numeric_cols].corr()
-            strong_correlations = []
+        try:
+            # Ensure analysis_results is a dictionary
+            if isinstance(analysis_results, str):
+                try:
+                    analysis_results = json.loads(analysis_results)
+                except (json.JSONDecodeError, TypeError):
+                    analysis_results = {}
+            elif analysis_results is None:
+                analysis_results = {}
             
-            for i in range(len(corr_matrix.columns)):
-                for j in range(i+1, len(corr_matrix.columns)):
-                    corr_value = corr_matrix.iloc[i, j]
-                    if abs(corr_value) > 0.5:  # Strong correlation threshold
-                        strong_correlations.append({
-                            "variable_1": corr_matrix.columns[i],
-                            "variable_2": corr_matrix.columns[j],
-                            "correlation": float(corr_value)
-                        })
-            
-            summary["key_relationships"]["strong_correlations"] = sorted(
-                strong_correlations, key=lambda x: abs(x["correlation"]), reverse=True
-            )[:10]  # Top 10 strongest correlations
-        
-        # Geographic analysis if applicable
-        geo_cols = []
-        potential_geo_names = ['district', 'region', 'state', 'city', 'area', 'zone', 'mandal', 'tehsil']
-        for col in df.columns:
-            if any(geo_name in col.lower() for geo_name in potential_geo_names):
-                geo_cols.append(col)
-        
-        if geo_cols and numeric_cols:
-            geo_col = geo_cols[0]
-            main_metric = numeric_cols[0]
-            regional_data = df.groupby(geo_col)[main_metric].agg(['mean', 'count']).reset_index()
-            
-            summary["geographic_analysis"] = {
-                "geographic_column": geo_col,
-                "number_of_regions": len(regional_data),
-                "performance_variation": {
-                    "highest_performing": {
-                        "region": regional_data.loc[regional_data['mean'].idxmax(), geo_col],
-                        "value": float(regional_data['mean'].max())
-                    },
-                    "lowest_performing": {
-                        "region": regional_data.loc[regional_data['mean'].idxmin(), geo_col],
-                        "value": float(regional_data['mean'].min())
-                    },
-                    "inequality_ratio": float(regional_data['mean'].max() / regional_data['mean'].min()) if regional_data['mean'].min() > 0 else None
-                }
+            summary = {
+                "dataset_overview": {
+                    "rows": len(df),
+                    "columns": len(df.columns),
+                    "numeric_columns": len(df.select_dtypes(include=[np.number]).columns),
+                    "categorical_columns": len(df.select_dtypes(include=['object']).columns),
+                    "date_columns": len(df.select_dtypes(include=['datetime']).columns)
+                },
+                "data_quality": {
+                    "missing_data_percentage": float(df.isnull().sum().sum() / (len(df) * len(df.columns)) * 100),
+                    "columns_with_missing_data": [col for col in df.columns if df[col].isnull().sum() > 0],
+                    "missing_data_by_column": {col: float(df[col].isnull().sum() / len(df) * 100) 
+                                             for col in df.columns if df[col].isnull().sum() > 0}
+                },
+                "numerical_summary": {},
+                "categorical_summary": {},
+                "key_relationships": {}
             }
         
-        return summary
+            # FIXED: Numerical summary with proper pandas handling
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if not numeric_cols.empty:  # Use .empty instead of direct boolean evaluation
+                for col in numeric_cols[:10]:
+                    try:
+                        col_data = df[col].dropna()
+                        if len(col_data) > 0:
+                            # Use .iloc to avoid ambiguous truth value
+                            q25 = col_data.quantile(0.25)
+                            q75 = col_data.quantile(0.75)
+                            iqr = q75 - q25
+                            
+                            # Fixed outlier calculation
+                            lower_bound = q25 - 1.5 * iqr
+                            upper_bound = q75 + 1.5 * iqr
+                            outlier_mask = (col_data < lower_bound) | (col_data > upper_bound)
+                            
+                            summary["numerical_summary"][col] = {
+                                "mean": float(col_data.mean()),
+                                "median": float(col_data.median()),
+                                "std": float(col_data.std()),
+                                "min": float(col_data.min()),
+                                "max": float(col_data.max()),
+                                "outlier_count": int(outlier_mask.sum())
+                            }
+                    except Exception as e:
+                        self.logger.warning(f"Failed to process numeric column {col}: {e}")
+                        continue
+        
+            # FIXED: Categorical summary with proper pandas handling
+            categorical_cols = df.select_dtypes(include=['object'])
+            if not categorical_cols.empty:  # Use .empty instead of direct boolean evaluation
+                for col in categorical_cols.columns[:8]:
+                    try:
+                        col_data = df[col].dropna()
+                        if len(col_data) > 0:
+                            value_counts = col_data.value_counts()
+                            summary["categorical_summary"][col] = {
+                                "unique_values": int(col_data.nunique()),
+                                "most_common": dict(value_counts.head(5)),  # Convert to dict
+                                "concentration_ratio": float(value_counts.iloc[0] / len(col_data)) if len(value_counts) > 0 else 0
+                            }
+                    except Exception as e:
+                        self.logger.warning(f"Failed to process categorical column {col}: {e}")
+                        continue
+        
+            # FIXED: Key relationships with better error handling
+            if len(numeric_cols) >= 2:
+                try:
+                    # Select only first 10 numeric columns to avoid memory issues
+                    selected_numeric = numeric_cols[:10]
+                    corr_matrix = df[selected_numeric].corr()
+                    strong_correlations = []
+                    
+                    # Use .iloc for safe indexing
+                    n_cols = len(corr_matrix.columns)
+                    for i in range(n_cols):
+                        for j in range(i+1, n_cols):
+                            corr_value = corr_matrix.iloc[i, j]
+                            if not pd.isna(corr_value) and abs(corr_value) > 0.5:
+                                strong_correlations.append({
+                                    "variable_1": corr_matrix.columns[i],
+                                    "variable_2": corr_matrix.columns[j],
+                                    "correlation": float(corr_value)
+                                })
+                    
+                    # Sort and limit correlations
+                    summary["key_relationships"]["strong_correlations"] = sorted(
+                        strong_correlations, key=lambda x: abs(x["correlation"]), reverse=True
+                    )[:10]
+                except Exception as e:
+                    self.logger.warning(f"Correlation analysis failed: {e}")
+                    summary["key_relationships"]["strong_correlations"] = []
+        
+            # FIXED: Geographic analysis with better column detection
+            geo_cols = []
+            potential_geo_names = ['district', 'region', 'state', 'city', 'area', 'zone', 'mandal', 'tehsil']
+            
+            # Safe column name checking
+            try:
+                for col in df.columns:
+                    if any(geo_name in str(col).lower() for geo_name in potential_geo_names):
+                        geo_cols.append(col)
+            except Exception as e:
+                self.logger.warning(f"Geographic column detection failed: {e}")
+            
+            if geo_cols and not numeric_cols.empty:
+                try:
+                    geo_col = geo_cols[0]
+                    main_metric = numeric_cols[0]
+                    
+                    # Safe groupby operation
+                    regional_data = df.groupby(geo_col)[main_metric].agg(['mean', 'count']).reset_index()
+                    
+                    if not regional_data.empty and not regional_data['mean'].isna().all():
+                        # Find valid (non-NaN) means
+                        valid_means = regional_data['mean'].dropna()
+                        if len(valid_means) > 0:
+                            max_idx = valid_means.idxmax()
+                            min_idx = valid_means.idxmin()
+                            
+                            summary["geographic_analysis"] = {
+                                "geographic_column": geo_col,
+                                "number_of_regions": len(regional_data),
+                                "performance_variation": {
+                                    "highest_performing": {
+                                        "region": str(regional_data.loc[max_idx, geo_col]),
+                                        "value": float(valid_means.max())
+                                    },
+                                    "lowest_performing": {
+                                        "region": str(regional_data.loc[min_idx, geo_col]),
+                                        "value": float(valid_means.min())
+                                    },
+                                    "inequality_ratio": float(valid_means.max() / valid_means.min()) if valid_means.min() > 0 else None
+                                }
+                            }
+                except Exception as e:
+                    self.logger.warning(f"Geographic analysis failed: {e}")
+                    summary["geographic_analysis"] = {"error": "Geographic analysis unavailable"}
+            
+            return summary
+            
+        except Exception as e:
+            self.logger.error(f"Data summary preparation failed: {e}")
+            return {"error": f"Data summary preparation failed: {str(e)}"}
 
     async def _create_narrative_summary(self, all_insights: Dict, domain: str, context: Dict) -> str:
         """Create a compelling narrative summary of all insights"""
@@ -605,7 +671,7 @@ class EnhancedReportAgent:
         prompt = f"""You are a senior government communications specialist writing for senior officials.
 
 INSIGHTS TO SYNTHESIZE:
-{json.dumps(all_insights, indent=2)}
+{json.dumps(all_insights, indent=2, default=str)}
 
 CONTEXT:
 - Domain: {domain}
@@ -1012,6 +1078,13 @@ Write for busy executives who need actionable insights.
         try:
             analysis_results = getattr(state, 'analysis_results', {})
             transformed_data = getattr(state, 'transformed_data', pd.DataFrame())
+            
+            # Ensure analysis_results is a dictionary, not a string
+            if isinstance(analysis_results, str):
+                try:
+                    analysis_results = json.loads(analysis_results)
+                except (json.JSONDecodeError, TypeError):
+                    analysis_results = {}
             
             # Create basic visualizations using our comprehensive visualizer
             if not transformed_data.empty:

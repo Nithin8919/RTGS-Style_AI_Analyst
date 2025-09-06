@@ -16,6 +16,38 @@ import gzip
 
 logger = logging.getLogger(__name__)
 
+def safe_dataframe_check(df: pd.DataFrame, column_name: str) -> bool:
+    """Safely check if dataframe column exists and has data"""
+    if column_name not in df.columns:
+        return False
+    
+    column_data = df[column_name]
+    
+    # Safe checks for pandas Series/Index
+    if column_data.empty:
+        return False
+    
+    # Check if all values are null
+    if column_data.isnull().all():
+        return False
+    
+    return True
+
+def safe_series_check(series: pd.Series) -> bool:
+    """Safely check if pandas Series has meaningful data"""
+    if series.empty:
+        return False
+    
+    # Check if all values are null
+    if series.isnull().all():
+        return False
+    
+    return True
+
+def safe_index_check(index: pd.Index) -> bool:
+    """Safely check if pandas Index has data"""
+    return len(index) > 0
+
 def detect_encoding(file_path: str) -> str:
     """Detect file encoding using chardet"""
     try:
