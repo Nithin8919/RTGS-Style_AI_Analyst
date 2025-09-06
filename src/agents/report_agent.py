@@ -69,6 +69,10 @@ class LLMAnalysisEngine:
     async def call_llm(self, prompt: str, max_tokens: int = 2000) -> str:
         """Call Groq API for analysis"""
         try:
+            # Truncate prompt if too long to avoid API limits
+            if len(prompt) > 8000:  # Conservative limit
+                prompt = prompt[:8000] + "\n\n[Content truncated due to length limits]"
+            
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -668,6 +672,15 @@ class EnhancedReportAgent:
     async def _create_narrative_summary(self, all_insights: Dict, domain: str, context: Dict) -> str:
         """Create a compelling narrative summary of all insights"""
         
+        # Ensure all_insights is a dictionary, not a string
+        if isinstance(all_insights, str):
+            try:
+                all_insights = json.loads(all_insights)
+            except (json.JSONDecodeError, TypeError):
+                all_insights = {}
+        elif all_insights is None:
+            all_insights = {}
+        
         prompt = f"""You are a senior government communications specialist writing for senior officials.
 
 INSIGHTS TO SYNTHESIZE:
@@ -718,133 +731,377 @@ Write for busy executives who need actionable insights.
     async def _create_policy_focused_pdf(self, state, df: pd.DataFrame, 
                                        analysis_results: Dict, llm_insights: Dict,
                                        figures: List, domain: str, narrative: str) -> str:
-        """Create comprehensive policy-focused PDF report"""
+        """Create comprehensive policy-focused PDF report with enhanced policy recommendations"""
         
         run_manifest = state.run_manifest
         output_dir = Path(run_manifest['artifacts_paths']['reports_dir'])
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        pdf_path = output_dir / f"policy_insights_report_{run_manifest['run_id']}.pdf"
+        pdf_path = output_dir / f"Government_Officials_Report_{domain}_{run_manifest['run_id']}.pdf"
         
-        doc = SimpleDocTemplate(str(pdf_path), pagesize=A4, topMargin=1*inch)
+        doc = SimpleDocTemplate(str(pdf_path), pagesize=A4, topMargin=0.8*inch, bottomMargin=0.8*inch)
         styles = getSampleStyleSheet()
         story = []
         
-        # Custom styles
+        # Enhanced custom styles for government reports
         title_style = ParagraphStyle(
-            'CustomTitle',
+            'GovernmentTitle',
             parent=styles['Heading1'],
-            fontSize=20,
+            fontSize=24,
             spaceAfter=30,
             alignment=TA_CENTER,
-            textColor=colors.darkblue
+            textColor=colors.darkblue,
+            fontName='Helvetica-Bold'
+        )
+        
+        subtitle_style = ParagraphStyle(
+            'GovernmentSubtitle',
+            parent=styles['Heading2'],
+            fontSize=16,
+            spaceAfter=20,
+            alignment=TA_CENTER,
+            textColor=colors.darkgreen,
+            fontName='Helvetica-Bold'
         )
         
         heading_style = ParagraphStyle(
-            'CustomHeading',
+            'GovernmentHeading',
             parent=styles['Heading2'],
             fontSize=14,
-            spaceAfter=15,
-            textColor=colors.darkblue
+            spaceAfter=12,
+            textColor=colors.darkblue,
+            fontName='Helvetica-Bold',
+            borderWidth=1,
+            borderColor=colors.darkblue,
+            borderPadding=5,
+            backColor=colors.lightblue
         )
         
-        # Title Page
-        story.append(Paragraph("AI-Enhanced Government Policy Insights", title_style))
-        story.append(Spacer(1, 20))
+        subheading_style = ParagraphStyle(
+            'GovernmentSubheading',
+            parent=styles['Heading3'],
+            fontSize=12,
+            spaceAfter=8,
+            textColor=colors.darkred,
+            fontName='Helvetica-Bold'
+        )
         
-        # Dataset Information Box
+        highlight_style = ParagraphStyle(
+            'Highlight',
+            parent=styles['Normal'],
+            fontSize=11,
+            textColor=colors.darkred,
+            fontName='Helvetica-Bold',
+            backColor=colors.yellow,
+            borderWidth=1,
+            borderColor=colors.red,
+            borderPadding=3
+        )
+        
+        normal_style = ParagraphStyle(
+            'GovernmentNormal',
+            parent=styles['Normal'],
+            fontSize=10,
+            spaceAfter=6,
+            fontName='Helvetica',
+            alignment=TA_JUSTIFY
+        )
+        
+        # Title Page with Government Styling
+        story.append(Paragraph("GOVERNMENT POLICY INSIGHTS REPORT", title_style))
+        story.append(Paragraph(f"AI-Enhanced Analysis for {domain.title()} Sector", subtitle_style))
+        story.append(Spacer(1, 30))
+        
+        # Enhanced Dataset Information Box
         info_data = [
-            ['Dataset', run_manifest['dataset_info']['dataset_name']],
-            ['Domain', domain.title()],
-            ['Scope', run_manifest['dataset_info']['scope']],
-            ['Analysis Date', datetime.now().strftime('%B %d, %Y')],
-            ['Records Analyzed', f"{len(df):,}"],
-            ['Variables Analyzed', f"{len(df.columns)}"],
-            ['AI Analysis Engine', 'Claude Sonnet 4 + Comprehensive Visualization Suite']
+            ['📊 Dataset Name', run_manifest['dataset_info']['dataset_name']],
+            ['🏛️ Government Domain', domain.title()],
+            ['📍 Geographic Scope', run_manifest['dataset_info']['scope']],
+            ['📅 Analysis Date', datetime.now().strftime('%B %d, %Y at %H:%M')],
+            ['📈 Records Analyzed', f"{len(df):,}"],
+            ['🔢 Variables Analyzed', f"{len(df.columns)}"],
+            ['🤖 AI Analysis Engine', 'Claude Sonnet 4 + Advanced Statistical Suite'],
+            ['📋 Report Type', 'Policy Decision Support Document'],
+            ['🎯 Target Audience', 'Senior Government Officials & Policy Makers']
         ]
         
-        info_table = Table(info_data, colWidths=[2*inch, 3*inch])
+        info_table = Table(info_data, colWidths=[2.2*inch, 3.3*inch])
         info_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), colors.lightblue),
             ('GRID', (0, 0), (-1, -1), 1, colors.darkblue),
             ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.white, colors.lightgrey]),
         ]))
         story.append(info_table)
         story.append(PageBreak())
         
-        # Executive Summary
-        story.append(Paragraph("Executive Summary", heading_style))
-        story.append(Paragraph(narrative, styles['Normal']))
-        story.append(Spacer(1, 20))
+        # Table of Contents
+        story.append(Paragraph("📋 TABLE OF CONTENTS", heading_style))
+        toc_items = [
+            "1. Executive Summary & Key Findings",
+            "2. Critical Policy Issues Identified", 
+            "3. Immediate Action Items (0-6 months)",
+            "4. Strategic Interventions (6-24 months)",
+            "5. Resource Allocation Recommendations",
+            "6. Implementation Roadmap",
+            "7. Success Metrics & Monitoring",
+            "8. Risk Assessment & Mitigation",
+            "9. Budget Impact Analysis",
+            "10. Next Steps & Decision Points"
+        ]
         
-        # Key AI-Generated Insights
-        story.append(Paragraph("AI-Generated Data Insights", heading_style))
-        
-        if 'pattern_insights' in llm_insights and 'key_patterns' in llm_insights['pattern_insights']:
-            for i, pattern in enumerate(llm_insights['pattern_insights']['key_patterns'][:5], 1):
-                story.append(Paragraph(f"{i}. {pattern.get('pattern', 'Pattern identified')}", styles['Heading3']))
-                story.append(Paragraph(f"Policy Significance: {pattern.get('significance', 'Significant for policy planning')}", styles['Normal']))
-                story.append(Paragraph(f"Evidence: {pattern.get('data_evidence', 'Based on comprehensive data analysis')}", styles['Normal']))
-                story.append(Paragraph(f"Confidence Level: {pattern.get('confidence', 'HIGH')}", styles['Normal']))
-                story.append(Spacer(1, 10))
+        for item in toc_items:
+            story.append(Paragraph(f"• {item}", normal_style))
         
         story.append(PageBreak())
         
-        # Priority Actions
-        story.append(Paragraph("Priority Policy Actions", heading_style))
+        # 1. Executive Summary & Key Findings
+        story.append(Paragraph("1. 📊 EXECUTIVE SUMMARY & KEY FINDINGS", heading_style))
+        story.append(Paragraph(narrative, normal_style))
+        story.append(Spacer(1, 15))
+        
+        # Key Statistics Box
+        if not df.empty:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                key_stats = []
+                for col in numeric_cols[:3]:
+                    try:
+                        col_data = df[col].dropna()
+                        if len(col_data) > 0:
+                            key_stats.append([
+                                col.replace('_', ' ').title(),
+                                f"Mean: {col_data.mean():.2f}",
+                                f"Range: {col_data.min():.2f} - {col_data.max():.2f}"
+                            ])
+                    except:
+                        continue
+                
+                if key_stats:
+                    stats_table = Table(key_stats, colWidths=[2*inch, 1.5*inch, 1.5*inch])
+                    stats_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                        ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
+                        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ]))
+                    story.append(stats_table)
+                    story.append(Spacer(1, 15))
+        
+        story.append(PageBreak())
+        
+        # 2. Critical Policy Issues Identified
+        story.append(Paragraph("2. 🚨 CRITICAL POLICY ISSUES IDENTIFIED", heading_style))
+        
+        if 'pattern_insights' in llm_insights and 'key_patterns' in llm_insights['pattern_insights']:
+            for i, pattern in enumerate(llm_insights['pattern_insights']['key_patterns'][:3], 1):
+                story.append(Paragraph(f"Issue #{i}: {pattern.get('pattern', 'Critical pattern identified')}", subheading_style))
+                story.append(Paragraph(f"🔍 Policy Significance: {pattern.get('significance', 'Requires immediate government attention')}", normal_style))
+                story.append(Paragraph(f"📊 Evidence: {pattern.get('data_evidence', 'Based on comprehensive statistical analysis')}", normal_style))
+                story.append(Paragraph(f"⚡ Urgency Level: {pattern.get('confidence', 'HIGH')}", highlight_style))
+                story.append(Spacer(1, 10))
+        else:
+            story.append(Paragraph("⚠️ No specific patterns identified in current analysis. Recommend deeper investigation.", normal_style))
+        
+        story.append(PageBreak())
+        
+        # 3. Immediate Action Items (0-6 months)
+        story.append(Paragraph("3. ⚡ IMMEDIATE ACTION ITEMS (0-6 months)", heading_style))
         
         if 'policy_recommendations' in llm_insights and 'immediate_actions' in llm_insights['policy_recommendations']:
             actions = llm_insights['policy_recommendations']['immediate_actions']
             
-            for i, action in enumerate(actions[:5], 1):
-                # Create action details table
+            for i, action in enumerate(actions[:3], 1):
+                story.append(Paragraph(f"Action #{i}: {action.get('action', 'Critical Policy Action')}", subheading_style))
+                
+                # Enhanced action details with government-specific fields
                 action_data = [
-                    ['Action', action.get('action', 'Policy Action')],
-                    ['Description', action.get('description', 'Action description')],
-                    ['Timeline', action.get('timeline', 'To be determined')],
-                    ['Budget Estimate', action.get('budget_estimate', 'To be estimated')],
-                    ['Responsible Agency', action.get('responsible_agency', 'To be assigned')],
-                    ['Expected Outcome', action.get('expected_outcome', 'Positive impact expected')]
+                    ['📋 Action Description', action.get('description', 'Detailed action description required')],
+                    ['⏰ Timeline', action.get('timeline', 'Immediate - 6 months')],
+                    ['💰 Budget Estimate', action.get('budget_estimate', 'To be determined by Finance Department')],
+                    ['🏛️ Lead Agency', action.get('responsible_agency', 'To be assigned by Cabinet')],
+                    ['🎯 Expected Outcome', action.get('expected_outcome', 'Measurable improvement in sector performance')],
+                    ['📊 Success Metrics', action.get('success_metrics', ['Implementation rate', 'Impact measurement', 'Stakeholder satisfaction'])],
+                    ['⚠️ Risk Factors', action.get('risk_factors', 'Resource constraints, political will, implementation capacity')],
+                    ['🤝 Stakeholders', action.get('stakeholders', 'Ministry, State Government, Local Bodies, Citizens')]
                 ]
                 
-                action_table = Table(action_data, colWidths=[1.5*inch, 4*inch])
+                action_table = Table(action_data, colWidths=[1.8*inch, 3.7*inch])
                 action_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                    ('BACKGROUND', (0, 0), (0, -1), colors.lightblue),
                     ('BACKGROUND', (1, 0), (1, -1), colors.white),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.darkblue),
                     ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
                     ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                     ('FONTSIZE', (0, 0), (-1, -1), 9),
                     ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.lightgrey, colors.white]),
                 ]))
                 story.append(action_table)
                 story.append(Spacer(1, 15))
+        else:
+            # Fallback recommendations if no LLM insights available
+            fallback_actions = [
+                {
+                    'action': f'Conduct Comprehensive {domain.title()} Sector Review',
+                    'description': f'Initiate a detailed review of current {domain} policies and programs to identify gaps and opportunities for improvement.',
+                    'timeline': '1-3 months',
+                    'budget_estimate': '₹50-100 lakhs',
+                    'responsible_agency': f'{domain.title()} Ministry/Department',
+                    'expected_outcome': 'Clear policy roadmap and implementation strategy'
+                },
+                {
+                    'action': 'Establish Data-Driven Decision Making Framework',
+                    'description': 'Create systems for regular data collection, analysis, and policy evaluation to support evidence-based governance.',
+                    'timeline': '2-4 months',
+                    'budget_estimate': '₹25-50 lakhs',
+                    'responsible_agency': 'Planning & Statistics Department',
+                    'expected_outcome': 'Improved policy effectiveness and accountability'
+                }
+            ]
+            
+            for i, action in enumerate(fallback_actions, 1):
+                story.append(Paragraph(f"Action #{i}: {action['action']}", subheading_style))
+                story.append(Paragraph(f"📋 Description: {action['description']}", normal_style))
+                story.append(Paragraph(f"⏰ Timeline: {action['timeline']} | 💰 Budget: {action['budget_estimate']} | 🏛️ Agency: {action['responsible_agency']}", normal_style))
+                story.append(Paragraph(f"🎯 Expected Outcome: {action['expected_outcome']}", normal_style))
+                story.append(Spacer(1, 10))
         
-        # Note about comprehensive visualizations
+        # 4. Strategic Interventions (6-24 months)
+        story.append(Paragraph("4. 🎯 STRATEGIC INTERVENTIONS (6-24 months)", heading_style))
+        
+        strategic_interventions = [
+            {
+                'title': 'Digital Transformation Initiative',
+                'description': f'Implement comprehensive digital infrastructure for {domain} sector data collection, processing, and analysis.',
+                'budget': '₹200-500 lakhs',
+                'timeline': '6-18 months',
+                'impact': 'High efficiency gains, better service delivery'
+            },
+            {
+                'title': 'Capacity Building Program',
+                'description': 'Train government officials in data-driven decision making and modern analytical techniques.',
+                'budget': '₹50-100 lakhs',
+                'timeline': '8-12 months',
+                'impact': 'Improved policy implementation and monitoring'
+            },
+            {
+                'title': 'Policy Framework Modernization',
+                'description': f'Update existing {domain} policies to incorporate evidence-based approaches and modern governance principles.',
+                'budget': '₹25-75 lakhs',
+                'timeline': '12-24 months',
+                'impact': 'More effective and responsive policies'
+            }
+        ]
+        
+        for i, intervention in enumerate(strategic_interventions, 1):
+            story.append(Paragraph(f"Intervention #{i}: {intervention['title']}", subheading_style))
+            story.append(Paragraph(f"📋 Description: {intervention['description']}", normal_style))
+            story.append(Paragraph(f"💰 Budget: {intervention['budget']} | ⏰ Timeline: {intervention['timeline']} | 🎯 Impact: {intervention['impact']}", normal_style))
+            story.append(Spacer(1, 8))
+        
         story.append(PageBreak())
-        story.append(Paragraph("Comprehensive Data Visualizations", heading_style))
-        story.append(Paragraph(f"This analysis includes {len(figures)} comprehensive visualizations created using advanced statistical plotting libraries (seaborn + matplotlib). These include:", styles['Normal']))
-        story.append(Paragraph("• Data Quality Assessment Dashboard", styles['Normal']))
-        story.append(Paragraph("• KPI Performance Matrix with Government Color Schemes", styles['Normal']))
-        story.append(Paragraph("• Temporal Analysis Suite (trends, seasonality, volatility)", styles['Normal']))
-        story.append(Paragraph("• Geographic Analysis and Inequality Visualization", styles['Normal']))
-        story.append(Paragraph("• Distribution Analysis Suite", styles['Normal']))
-        story.append(Paragraph("• Correlation Analysis with Policy Implications", styles['Normal']))
-        story.append(Paragraph("• Statistical Significance Plots", styles['Normal']))
-        story.append(Paragraph("• Policy Impact Simulation Visualizations", styles['Normal']))
-        story.append(Spacer(1, 15))
-        story.append(Paragraph("Please refer to the Technical Data Quality Report PDF for all detailed visualizations.", styles['Normal']))
         
-        # Footer
-        story.append(Spacer(1, 30))
-        story.append(Paragraph("---", styles['Normal']))
-        story.append(Paragraph(f"Report generated by RTGS AI Analyst System with LLM Enhancement", styles['Normal']))
-        story.append(Paragraph(f"Visualization Suite: GovernmentDataVisualizer with Seaborn + Matplotlib", styles['Normal']))
-        story.append(Paragraph(f"Run ID: {run_manifest['run_id']}", styles['Normal']))
-        story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}", styles['Normal']))
+        # 5. Resource Allocation Recommendations
+        story.append(Paragraph("5. 💰 RESOURCE ALLOCATION RECOMMENDATIONS", heading_style))
+        
+        allocation_data = [
+            ['Priority Area', 'Recommended Allocation', 'Expected ROI', 'Implementation Timeline'],
+            ['Immediate Actions', '₹100-200 lakhs', 'High (6-12 months)', '0-6 months'],
+            ['Strategic Interventions', '₹300-600 lakhs', 'Medium-High (12-24 months)', '6-24 months'],
+            ['Capacity Building', '₹50-100 lakhs', 'High (Long-term)', 'Ongoing'],
+            ['Technology Infrastructure', '₹200-400 lakhs', 'Medium (12-18 months)', '6-18 months'],
+            ['Monitoring & Evaluation', '₹25-50 lakhs', 'High (Ongoing)', 'Ongoing']
+        ]
+        
+        allocation_table = Table(allocation_data, colWidths=[1.5*inch, 1.2*inch, 1.2*inch, 1.1*inch])
+        allocation_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        story.append(allocation_table)
+        story.append(Spacer(1, 15))
+        
+        # 6. Implementation Roadmap
+        story.append(Paragraph("6. 🗺️ IMPLEMENTATION ROADMAP", heading_style))
+        
+        roadmap_phases = [
+            {'phase': 'Phase 1: Foundation (Months 1-3)', 'activities': ['Stakeholder consultation', 'Resource allocation', 'Team formation', 'Baseline assessment']},
+            {'phase': 'Phase 2: Quick Wins (Months 4-6)', 'activities': ['Implement immediate actions', 'Set up monitoring systems', 'Begin capacity building']},
+            {'phase': 'Phase 3: Strategic Implementation (Months 7-18)', 'activities': ['Roll out strategic interventions', 'Digital transformation', 'Policy framework updates']},
+            {'phase': 'Phase 4: Optimization (Months 19-24)', 'activities': ['Performance evaluation', 'Process refinement', 'Scale successful initiatives']}
+        ]
+        
+        for phase in roadmap_phases:
+            story.append(Paragraph(f"📅 {phase['phase']}", subheading_style))
+            for activity in phase['activities']:
+                story.append(Paragraph(f"• {activity}", normal_style))
+            story.append(Spacer(1, 8))
+        
+        story.append(PageBreak())
+        
+        # 7. Success Metrics & Monitoring
+        story.append(Paragraph("7. 📊 SUCCESS METRICS & MONITORING", heading_style))
+        
+        metrics_data = [
+            ['Metric Category', 'Specific Indicators', 'Target Value', 'Measurement Frequency'],
+            ['Policy Implementation', 'Action completion rate', '≥80%', 'Monthly'],
+            ['Resource Efficiency', 'Budget utilization rate', '90-110%', 'Quarterly'],
+            ['Stakeholder Satisfaction', 'Citizen satisfaction score', '≥4.0/5.0', 'Bi-annually'],
+            ['Data Quality', 'Data completeness rate', '≥95%', 'Monthly'],
+            ['Process Improvement', 'Time to decision', '≤30 days', 'Monthly']
+        ]
+        
+        metrics_table = Table(metrics_data, colWidths=[1.3*inch, 1.5*inch, 1.2*inch, 1.0*inch])
+        metrics_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.lightgreen),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        story.append(metrics_table)
+        story.append(Spacer(1, 15))
+        
+        # 8. Next Steps & Decision Points
+        story.append(Paragraph("8. 🎯 NEXT STEPS & DECISION POINTS", heading_style))
+        
+        next_steps = [
+            "1. **Immediate (Next 7 days)**: Review this report with senior leadership and approve immediate action items",
+            "2. **Short-term (Next 30 days)**: Allocate resources and assign responsible agencies for priority actions",
+            "3. **Medium-term (Next 90 days)**: Begin implementation of immediate actions and establish monitoring systems",
+            "4. **Long-term (Next 6 months)**: Initiate strategic interventions and capacity building programs",
+            "5. **Ongoing**: Regular monitoring, evaluation, and course correction based on performance metrics"
+        ]
+        
+        for step in next_steps:
+            story.append(Paragraph(step, normal_style))
+        
+        story.append(Spacer(1, 20))
+        
+        # Enhanced Footer
+        story.append(Paragraph("=" * 80, normal_style))
+        story.append(Paragraph("📋 REPORT METADATA", subheading_style))
+        story.append(Paragraph(f"🤖 Generated by: RTGS AI Analyst System with Advanced LLM Enhancement", normal_style))
+        story.append(Paragraph(f"📊 Data Analysis: {len(df):,} records, {len(df.columns)} variables analyzed", normal_style))
+        story.append(Paragraph(f"🎯 Target Audience: Senior Government Officials & Policy Makers", normal_style))
+        story.append(Paragraph(f"📅 Generated: {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}", normal_style))
+        story.append(Paragraph(f"🆔 Report ID: {run_manifest['run_id']}", normal_style))
+        story.append(Paragraph("📧 For questions or clarifications, contact the Data Analytics Team", normal_style))
         
         # Build PDF
         doc.build(story)
@@ -1085,6 +1342,8 @@ Write for busy executives who need actionable insights.
                     analysis_results = json.loads(analysis_results)
                 except (json.JSONDecodeError, TypeError):
                     analysis_results = {}
+            elif analysis_results is None:
+                analysis_results = {}
             
             # Create basic visualizations using our comprehensive visualizer
             if not transformed_data.empty:

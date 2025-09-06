@@ -523,10 +523,19 @@ class GovernmentDataVisualizer:
             
             # Add KDE line
             if len(data) > 10:
-                from scipy import stats
-                kde = stats.gaussian_kde(data)
-                x_range = np.linspace(data.min(), data.max(), 100)
-                ax.plot(x_range, kde(x_range), color='red', linewidth=2, label='KDE')
+                try:
+                    from scipy import stats
+                    # Check for data variation before applying KDE
+                    if data.std() > 1e-10:  # Avoid singular covariance matrix
+                        kde = stats.gaussian_kde(data)
+                        x_range = np.linspace(data.min(), data.max(), 100)
+                        ax.plot(x_range, kde(x_range), color='red', linewidth=2, label='KDE')
+                    else:
+                        # Data has no variation, skip KDE
+                        pass
+                except Exception as e:
+                    # Skip KDE if it fails (e.g., singular covariance matrix)
+                    pass
             
             # Add statistics
             mean_val = data.mean()

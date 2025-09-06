@@ -37,7 +37,8 @@ class InsightAgent:
         load_dotenv()
         
         self.groq_client = Groq(
-            api_key=os.getenv('GROQ_API_KEY')
+            api_key=os.getenv('GROQ_API_KEY'),
+            timeout=30.0  # Add timeout to prevent hanging
         )
         self.model = self.config['groq']['model']
         self.temperature = self.config['groq']['temperature']
