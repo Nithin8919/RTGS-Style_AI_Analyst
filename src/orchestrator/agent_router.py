@@ -396,10 +396,24 @@ class RTGSOrchestrator:
                 key_insights = [finding['finding'] for finding in insights_data[:3]]
             
             # Collect pipeline statistics
+            # Enhanced pipeline stats for data agnostic capabilities
+            cleaned_data = getattr(final_state, 'cleaned_data', None)
+            transformed_data = getattr(final_state, 'transformed_data', None)
+            analysis_results = getattr(final_state, 'analysis_results', {})
+            insights = getattr(final_state, 'insights', {})
+            
             pipeline_stats = {
-                "rows_processed": getattr(final_state, 'rows_processed', 0),
+                "rows_processed": len(cleaned_data) if cleaned_data is not None else 0,
+                "original_columns": len(getattr(final_state, 'raw_data', None).columns) if hasattr(final_state, 'raw_data') and final_state.raw_data is not None else 0,
+                "cleaned_columns": len(cleaned_data.columns) if cleaned_data is not None else 0,
+                "transformed_columns": len(transformed_data.columns) if transformed_data is not None else 0,
+                "features_engineered": len(transformed_data.columns) - len(cleaned_data.columns) if cleaned_data is not None and transformed_data is not None else 0,
                 "transformations_applied": len(getattr(final_state, 'transformation_log', [])),
                 "quality_score": getattr(final_state, 'quality_score', 0),
+                "statistical_tests_performed": len(analysis_results.get('hypothesis_tests', {}).get('group_comparisons', [])) if isinstance(analysis_results, dict) else 0,
+                "correlations_identified": len(analysis_results.get('correlations', {}).get('significant_correlations', [])) if isinstance(analysis_results, dict) else 0,
+                "insights_generated": len(insights.get('key_findings', [])) if isinstance(insights, dict) else 0,
+                "recommendations_created": len(insights.get('policy_recommendations', [])) if isinstance(insights, dict) else 0,
                 "execution_time_seconds": getattr(final_state, 'total_execution_time', 0)
             }
             
