@@ -24,7 +24,7 @@ from src.agents.transformation_agent import TransformationAgent
 from src.agents.validator_agent import ValidatorAgent
 from src.agents.analysis_agent import AnalysisAgent
 from src.agents.insight_agent import InsightAgent
-from src.agents.report_agent import ReportAgent
+from src.agents.report_agent import EnhancedReportAgent
 from src.agents.memory_agent import MemoryAgent
 from src.agents.observability_agent import ObservabilityAgent
 
@@ -77,7 +77,7 @@ class RTGSOrchestrator:
             'validator': ValidatorAgent(),
             'analysis': AnalysisAgent(),
             'insight': InsightAgent(),
-            'report': ReportAgent(),
+            'report': EnhancedReportAgent(),
             'memory': MemoryAgent(),
             'observability': ObservabilityAgent()
         }

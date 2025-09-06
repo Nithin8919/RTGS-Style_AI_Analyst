@@ -14,7 +14,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 import asyncio
 
-from langchain_openai import ChatOpenAI
+from groq import Groq
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 
@@ -32,12 +32,19 @@ class SchemaInferenceAgent:
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
-        # Initialize LLM for canonical naming
-        self.llm = ChatOpenAI(
-            model=self.config['openai']['model'],
-            temperature=self.config['openai']['temperature'],
-            max_tokens=self.config['openai']['max_tokens']
+        # Initialize Groq client for canonical naming
+        import os
+        from dotenv import load_dotenv
+        
+        # Load environment variables from .env file
+        load_dotenv()
+        
+        self.groq_client = Groq(
+            api_key=os.getenv('GROQ_API_KEY')
         )
+        self.model = self.config['groq']['model']
+        self.temperature = self.config['groq']['temperature']
+        self.max_tokens = self.config['groq']['max_tokens']
         
         # Load column aliases from config
         self.column_aliases = self._load_column_aliases()
@@ -335,11 +342,25 @@ Please suggest a canonical name and confirm/correct the data type."""
                 HumanMessage(content=user_prompt)
             ]
             
-            response = await self.llm.ainvoke(messages)
+            # Convert messages to Groq format
+            groq_messages = []
+            for msg in messages:
+                if hasattr(msg, 'content'):
+                    groq_messages.append({"role": "user", "content": msg.content})
+            
+            response = self.groq_client.chat.completions.create(
+                model=self.model,
+                messages=groq_messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens
+            )
+            
+            # Extract content from Groq response
+            response_content = response.choices[0].message.content
             
             # Parse JSON response
             parser = JsonOutputParser()
-            result = parser.parse(response.content)
+            result = parser.parse(response_content)
             
             # Validate and clean the response
             result['canonical_name'] = self._clean_canonical_name(result.get('canonical_name', column_name))

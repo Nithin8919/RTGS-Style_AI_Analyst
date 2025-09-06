@@ -12,7 +12,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import hashlib
 
-from langchain_openai import ChatOpenAI
+from groq import Groq
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 
@@ -29,12 +29,19 @@ class InsightAgent:
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
-        # Initialize LLM
-        self.llm = ChatOpenAI(
-            model=self.config['openai']['model'],
-            temperature=self.config['openai']['temperature'],
-            max_tokens=self.config['openai']['max_tokens']
+        # Initialize Groq client
+        import os
+        from dotenv import load_dotenv
+        
+        # Load environment variables from .env file
+        load_dotenv()
+        
+        self.groq_client = Groq(
+            api_key=os.getenv('GROQ_API_KEY')
         )
+        self.model = self.config['groq']['model']
+        self.temperature = self.config['groq']['temperature']
+        self.max_tokens = self.config['groq']['max_tokens']
         
         # Load insight generation settings
         self.insights_config = self.config.get('insights', {})
@@ -273,11 +280,22 @@ Generate 3-5 key policy findings based on this evidence."""
                 HumanMessage(content=user_prompt)
             ]
             
-            response = await self.llm.ainvoke(messages)
+            # Convert messages to Groq format
+            groq_messages = []
+            for msg in messages:
+                if hasattr(msg, 'content'):
+                    groq_messages.append({"role": "user", "content": msg.content})
+            
+            response = self.groq_client.chat.completions.create(
+                model=self.model,
+                messages=groq_messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens
+            )
             
             # Parse JSON response
             parser = JsonOutputParser()
-            findings = parser.parse(response.content)
+            findings = parser.parse(response.choices[0].message.content)
             
             # Validate and enhance findings
             validated_findings = []
@@ -538,9 +556,20 @@ Generate actionable policy recommendations for government implementation."""
                 HumanMessage(content=user_prompt)
             ]
             
-            response = await self.llm.ainvoke(messages)
+            # Convert messages to Groq format
+            groq_messages = []
+            for msg in messages:
+                if hasattr(msg, 'content'):
+                    groq_messages.append({"role": "user", "content": msg.content})
+            
+            response = self.groq_client.chat.completions.create(
+                model=self.model,
+                messages=groq_messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens
+            )
             parser = JsonOutputParser()
-            recommendations = parser.parse(response.content)
+            recommendations = parser.parse(response.choices[0].message.content)
             
             # Validate and enhance recommendations
             validated_recommendations = []
@@ -624,9 +653,20 @@ Create executive summary for senior officials."""
                 HumanMessage(content=user_prompt)
             ]
             
-            response = await self.llm.ainvoke(messages)
+            # Convert messages to Groq format
+            groq_messages = []
+            for msg in messages:
+                if hasattr(msg, 'content'):
+                    groq_messages.append({"role": "user", "content": msg.content})
+            
+            response = self.groq_client.chat.completions.create(
+                model=self.model,
+                messages=groq_messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens
+            )
             parser = JsonOutputParser()
-            summary = parser.parse(response.content)
+            summary = parser.parse(response.choices[0].message.content)
             
             return {
                 'one_line_summary': summary.get('one_line_summary', ''),

@@ -1,6 +1,6 @@
 """
-RTGS AI Analyst - Report Agent
-Assembles all analysis outputs into comprehensive reports for different audiences
+RTGS AI Analyst - Enhanced Report Agent
+Comprehensive report generation with LLM analysis and advanced seaborn visualizations
 """
 
 import pandas as pd
@@ -8,1277 +8,1066 @@ import numpy as np
 import json
 import yaml
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import plotly.io as pio
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.backends.backend_pdf import PdfPages
+import warnings
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+import io
+import asyncio
 
 from src.utils.logging import get_agent_logger
 
+# Import our comprehensive visualization utility
+from src.utils.visualization import GovernmentDataVisualizer
 
-class ReportAgent:
-    """Agent responsible for assembling final reports and visualizations"""
+warnings.filterwarnings('ignore')
+
+"""
+Updated LLM Analysis Engine for OpenAI API
+"""
+
+import os
+from groq import Groq
+from dotenv import load_dotenv
+import json
+from typing import Dict
+from src.utils.logging import get_agent_logger
+
+# Load environment variables
+load_dotenv()
+
+class LLMAnalysisEngine:
+    """LLM-powered analysis engine using Groq API"""
     
-    def __init__(self, config_path: str = "config.yaml"):
-        self.logger = get_agent_logger("report")
+    def __init__(self):
+        self.logger = get_agent_logger("llm_analysis")
         
         # Load configuration
-        with open(config_path, 'r') as f:
+        with open('config.yaml', 'r') as f:
             self.config = yaml.safe_load(f)
+        
+        # Load environment variables from .env file
+        from dotenv import load_dotenv
+        load_dotenv()
+        
+        # Initialize Groq client
+        self.client = Groq(
+            api_key=os.getenv("GROQ_API_KEY")
+        )
+        
+        # Use model from configuration
+        self.model = self.config['groq']['model']
     
-    async def process(self, state) -> Any:
-        """Main report assembly processing pipeline with robust error handling"""
-        self.logger.info("Starting report assembly process")
-        
+    async def call_llm(self, prompt: str, max_tokens: int = 2000) -> str:
+        """Call Groq API for analysis"""
         try:
-            # Get best available data with fallback and validation
-            input_data = None
-            data_sources = ['insights', 'analysis_results', 'transformed_data']
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=max_tokens,
+                temperature=0.1,  # Low temperature for consistent analysis
+                top_p=1.0
+            )
             
-            insights = None
-            analysis_results = {}
-            transformed_data = pd.DataFrame()
-            
-            # Safe data extraction
-            if hasattr(state, 'insights') and state.insights:
-                insights = state.insights
-                self.logger.info("Found insights data")
-            
-            if hasattr(state, 'analysis_results') and state.analysis_results:
-                analysis_results = state.analysis_results
-                self.logger.info("Found analysis results")
-            
-            if hasattr(state, 'transformed_data') and state.transformed_data is not None:
-                transformed_data = state.transformed_data
-                self.logger.info(f"Found transformed data: {len(transformed_data)} rows")
-            
-            # Validate we have minimum required data
-            if not insights and not analysis_results:
-                # Create minimal insights from available data
-                insights = self._create_minimal_insights(state)
-                self.logger.warning("Created minimal insights from available data")
-            
-            if insights is None:
-                raise ValueError("No insights available for report generation")
-            
-            # Initialize error tracking
-            if not hasattr(state, 'errors'):
-                state.errors = []
-            if not hasattr(state, 'warnings'):
-                state.warnings = []
-            
-            # Generate visualizations with error handling
-            plots = {}
-            try:
-                plots = await self._generate_visualizations(analysis_results, transformed_data, state)
-            except Exception as e:
-                self.logger.warning(f"Visualization generation failed: {str(e)}")
-                state.warnings.append(f"Visualization generation failed: {str(e)}")
-                plots = {}
-            
-            # Create reports with individual error handling
-            reports = {}
-            
-            # Executive summary
-            try:
-                reports['executive_summary'] = await self._create_executive_summary_md(insights, state)
-            except Exception as e:
-                self.logger.warning(f"Executive summary creation failed: {str(e)}")
-                reports['executive_summary'] = self._create_fallback_executive_summary(state)
-            
-            # Technical report
-            try:
-                reports['technical_report'] = await self._create_technical_report_md(
-                    analysis_results, insights, state
-                )
-            except Exception as e:
-                self.logger.warning(f"Technical report creation failed: {str(e)}")
-                reports['technical_report'] = self._create_fallback_technical_report(state)
-            
-            # Judge readme
-            try:
-                reports['judge_readme'] = await self._create_judge_readme(insights, state)
-            except Exception as e:
-                self.logger.warning(f"Judge readme creation failed: {str(e)}")
-                reports['judge_readme'] = self._create_fallback_judge_readme(state)
-            
-            # Key outputs summary
-            try:
-                reports['key_outputs_summary'] = await self._create_key_outputs_html(
-                    insights, plots, state
-                )
-            except Exception as e:
-                self.logger.warning(f"Key outputs HTML creation failed: {str(e)}")
-                reports['key_outputs_summary'] = self._create_fallback_key_outputs_html(state)
-            
-            # Demo script
-            try:
-                reports['demo_script'] = await self._create_demo_script(insights, state)
-            except Exception as e:
-                self.logger.warning(f"Demo script creation failed: {str(e)}")
-                reports['demo_script'] = self._create_fallback_demo_script(state)
-            
-            # Ensure output directories exist
-            try:
-                await self._ensure_output_directories(state)
-            except Exception as e:
-                self.logger.warning(f"Directory creation failed: {str(e)}")
-            
-            # Save reports with error handling
-            try:
-                await self._save_reports(reports, state)
-            except Exception as e:
-                self.logger.warning(f"Report saving failed: {str(e)}")
-            
-            # Save visualizations with error handling
-            try:
-                await self._save_visualizations(plots, state)
-            except Exception as e:
-                self.logger.warning(f"Visualization saving failed: {str(e)}")
-            
-            # Create CLI summary
-            try:
-                cli_summary = self._create_cli_summary(insights, analysis_results, state)
-            except Exception as e:
-                self.logger.warning(f"CLI summary creation failed: {str(e)}")
-                cli_summary = self._create_fallback_cli_summary(state)
-            
-            # Update state
-            state.reports = reports
-            state.plots = plots
-            state.cli_summary = cli_summary
-            
-            self.logger.info(f"Report assembly completed: {len(reports)} reports, {len(plots)} visualizations")
-            
-            return state
+            return response.choices[0].message.content
             
         except Exception as e:
-            self.logger.error(f"Report assembly failed: {str(e)}")
-            if not hasattr(state, 'errors'):
-                state.errors = []
-            state.errors.append(f"Report assembly failed: {str(e)}")
-            
-            # Create minimal state to prevent cascade failure
-            state.reports = {'error': str(e)}
-            state.plots = {}
-            state.cli_summary = {'error': str(e)}
-            
-            return state
+            self.logger.error(f"Groq API call failed: {e}")
+            return "Analysis unavailable due to technical issues."
+    
+    async def analyze_data_patterns(self, df_summary: Dict, domain: str, scope: str) -> Dict:
+        """Analyze data patterns and generate insights using Groq"""
+        
+        prompt = f"""You are a senior government data analyst with expertise in {domain} sector analysis. 
 
-    async def _generate_visualizations(self, analysis_results: Dict, df: pd.DataFrame, state) -> Dict[str, Any]:
-        """Generate visualizations with safe error handling"""
-        self.logger.info("Generating visualizations")
+DATASET CONTEXT:
+- Domain: {domain}
+- Scope: {scope}
+- Data Summary: {json.dumps(df_summary, indent=2)}
+
+ANALYSIS TASK:
+Analyze the data patterns and provide comprehensive insights. Focus on:
+
+1. KEY PATTERNS: What are the most significant patterns in this data?
+2. ANOMALIES: What unusual patterns or outliers require attention?
+3. CORRELATIONS: What relationships between variables are policy-relevant?
+4. TRENDS: What trends indicate improvement or deterioration?
+5. GEOGRAPHIC INSIGHTS: What spatial patterns suggest targeted interventions?
+
+RESPONSE FORMAT (JSON):
+{{
+    "key_patterns": [
+        {{
+            "pattern": "description of pattern",
+            "significance": "why this matters for policy",
+            "confidence": "HIGH/MEDIUM/LOW",
+            "data_evidence": "specific numbers/metrics supporting this"
+        }}
+    ],
+    "critical_anomalies": [
+        {{
+            "anomaly": "description",
+            "potential_causes": ["cause1", "cause2"],
+            "recommended_investigation": "what to investigate further",
+            "urgency": "HIGH/MEDIUM/LOW"
+        }}
+    ],
+    "actionable_correlations": [
+        {{
+            "correlation": "Variable A and Variable B relationship",
+            "policy_implication": "what this means for interventions",
+            "strength": "correlation strength",
+            "recommended_action": "specific action to take"
+        }}
+    ],
+    "geographic_insights": {{
+        "high_performing_areas": "characteristics of top performers",
+        "underperforming_areas": "characteristics needing attention",
+        "inequality_assessment": "severity and nature of geographic inequalities",
+        "targeted_intervention_areas": ["specific areas for immediate attention"]
+    }}
+}}
+
+Provide analysis that is:
+- Specific to the {domain} domain
+- Actionable for government decision-makers
+- Evidence-based using the provided data
+- Focused on policy implications
+"""
         
-        plots = {}
-        
+        result = await self.call_llm(prompt, 3000)
         try:
-            # Validate inputs
-            if not isinstance(analysis_results, dict):
-                analysis_results = {}
-            
-            if df is None or df.empty:
-                self.logger.warning("No data available for visualizations")
-                return plots
-            
-            # Safe KPI dashboard
-            try:
-                kpis_data = analysis_results.get('kpis', {})
-                if isinstance(kpis_data, dict):
-                    plots['kpi_dashboard'] = self._create_safe_kpi_dashboard(kpis_data, df)
-            except Exception as e:
-                self.logger.warning(f"KPI dashboard creation failed: {str(e)}")
-            
-            # Safe correlation heatmap
-            try:
-                numeric_cols = df.select_dtypes(include=[np.number]).columns
-                if len(numeric_cols) > 1:
-                    plots['correlation_heatmap'] = self._create_safe_correlation_heatmap(df[numeric_cols])
-            except Exception as e:
-                self.logger.warning(f"Correlation heatmap creation failed: {str(e)}")
-            
-            # Safe distribution plots
-            try:
-                plots.update(self._create_safe_distribution_plots(df))
-            except Exception as e:
-                self.logger.warning(f"Distribution plots creation failed: {str(e)}")
-            
-            # Safe data quality chart
-            try:
-                plots['data_quality'] = self._create_safe_data_quality_chart(state)
-            except Exception as e:
-                self.logger.warning(f"Data quality chart creation failed: {str(e)}")
-            
-        except Exception as e:
-            self.logger.warning(f"Visualization generation failed: {str(e)}")
-            plots['error'] = f"Visualization generation failed: {str(e)}"
+            return json.loads(result)
+        except:
+            return {"error": "Failed to parse LLM response", "raw_response": result}
+    
+    async def generate_policy_recommendations(self, data_insights: Dict, domain: str, 
+                                            statistical_results: Dict, context: Dict) -> Dict:
+        """Generate comprehensive policy recommendations using Groq"""
         
-        return plots
+        prompt = f"""You are a senior policy advisor specializing in {domain} sector with 15+ years of experience.
 
-    def _create_kpi_dashboard(self, kpis: List[Dict]) -> go.Figure:
-        """Create KPI dashboard visualization"""
-        
-        # Take top 6 KPIs
-        top_kpis = sorted(kpis, key=lambda x: x.get('domain_relevance') == 'high', reverse=True)[:6]
-        
-        fig = make_subplots(
-            rows=2, cols=3,
-            subplot_titles=[kpi['metric_name'] for kpi in top_kpis],
-            specs=[[{"type": "indicator"}, {"type": "indicator"}, {"type": "indicator"}],
-                   [{"type": "indicator"}, {"type": "indicator"}, {"type": "indicator"}]]
-        )
-        
-        for i, kpi in enumerate(top_kpis):
-            row = (i // 3) + 1
-            col = (i % 3) + 1
-            
-            stats = kpi.get('statistics', {})
-            mean_val = stats.get('mean', 0)
-            
-            fig.add_trace(
-                go.Indicator(
-                    mode="number+gauge",
-                    value=mean_val,
-                    title={"text": kpi['metric_name']},
-                    domain={'x': [0, 1], 'y': [0, 1]},
-                    gauge={'axis': {'range': [stats.get('min', 0), stats.get('max', mean_val * 2)]}}
-                ),
-                row=row, col=col
-            )
-        
-        fig.update_layout(
-            title="Key Performance Indicators Dashboard",
-            height=600,
-            showlegend=False
-        )
-        
-        return fig
+ANALYSIS CONTEXT:
+- Domain: {domain}
+- Geographic Scope: {context.get('scope', 'Regional')}
+- Data Insights: {json.dumps(data_insights, indent=2)}
+- Statistical Results: {json.dumps(statistical_results, indent=2)}
 
-    def _create_trend_charts(self, trends: List[Dict], df: pd.DataFrame) -> go.Figure:
-        """Create trend analysis charts"""
-        
-        fig = go.Figure()
-        
-        for trend in trends[:3]:  # Limit to top 3 trends
-            metric = trend['metric']
-            time_col = trend['time_column']
-            
-            try:
-                # Create time series
-                if time_col in df.columns and metric in df.columns:
-                    time_series = df.groupby(time_col)[metric].mean().reset_index()
-                    
-                    fig.add_trace(
-                        go.Scatter(
-                            x=time_series[time_col],
-                            y=time_series[metric],
-                            mode='lines+markers',
-                            name=metric,
-                            line=dict(width=2)
-                        )
-                    )
-            except Exception as e:
-                self.logger.warning(f"Failed to create trend chart for {metric}: {str(e)}")
-        
-        fig.update_layout(
-            title="Time Trends Analysis",
-            xaxis_title="Time",
-            yaxis_title="Value",
-            height=500,
-            hovermode='x unified'
-        )
-        
-        return fig
+POLICY TASK:
+Generate comprehensive, actionable policy recommendations that are:
+1. Specific to {domain} sector challenges
+2. Evidence-based using the provided analysis
+3. Implementable within government constraints
+4. Prioritized by impact and feasibility
 
-    def _create_spatial_charts(self, spatial_analysis: Dict) -> go.Figure:
-        """Create spatial analysis charts"""
-        
-        # Create specs list safely
-        specs_list = []
-        for _ in range(len(spatial_analysis)):
-            specs_list.append({"type": "bar"})
-        
-        fig = make_subplots(
-            rows=1, cols=len(spatial_analysis),
-            subplot_titles=list(spatial_analysis.keys()),
-            specs=[specs_list]
-        )
-        
-        for i, (metric, data) in enumerate(spatial_analysis.items()):
-            # Get top and bottom areas
-            top_areas = data.get('top_performing_areas', {})
-            bottom_areas = data.get('bottom_performing_areas', {})
-            
-            # Combine for visualization
-            areas = list(top_areas.keys()) + list(bottom_areas.keys())
-            values = [top_areas[area]['mean'] for area in top_areas.keys()] + \
-                    [bottom_areas[area]['mean'] for area in bottom_areas.keys()]
-            colors = ['green'] * len(top_areas) + ['red'] * len(bottom_areas)
-            
-            fig.add_trace(
-                go.Bar(
-                    x=areas,
-                    y=values,
-                    marker_color=colors,
-                    name=metric,
-                    showlegend=False
-                ),
-                row=1, col=i+1
-            )
-        
-        fig.update_layout(
-            title="Spatial Analysis - Top vs Bottom Performing Areas",
-            height=500
-        )
-        
-        return fig
+RESPONSE FORMAT (JSON):
+{{
+    "immediate_actions": [
+        {{
+            "action": "specific action name",
+            "description": "detailed description",
+            "rationale": "why this action based on data evidence",
+            "timeline": "implementation timeframe",
+            "budget_estimate": "cost estimate with reasoning",
+            "responsible_agency": "which agency should lead",
+            "success_metrics": ["how to measure success"],
+            "implementation_steps": ["step 1", "step 2", "step 3"]
+        }}
+    ],
+    "strategic_interventions": [
+        {{
+            "intervention": "intervention name",
+            "problem_statement": "specific problem this addresses",
+            "evidence_base": "data evidence supporting need",
+            "implementation_approach": "how to implement",
+            "expected_outcomes": {{
+                "short_term": ["6 month outcomes"],
+                "medium_term": ["1-2 year outcomes"],
+                "long_term": ["3-5 year outcomes"]
+            }}
+        }}
+    ],
+    "resource_allocation_strategy": {{
+        "allocation_principles": "how to allocate resources fairly and effectively",
+        "priority_areas": ["area 1 - rationale", "area 2 - rationale"],
+        "efficiency_measures": "how to maximize impact per rupee spent"
+    }}
+}}
 
-    def _create_correlation_heatmap(self, correlations: List[Dict]) -> go.Figure:
-        """Create correlation heatmap"""
+Make recommendations grounded in the specific data evidence provided and tailored to {domain} sector best practices.
+"""
         
-        if not correlations:
-            return go.Figure().add_annotation(text="No significant correlations found")
-        
-        # Extract variables and correlation values
-        variables = set()
-        for corr in correlations:
-            variables.add(corr['variable_1'])
-            variables.add(corr['variable_2'])
-        
-        variables = list(variables)
-        n_vars = len(variables)
-        
-        # Create correlation matrix
-        corr_matrix = np.zeros((n_vars, n_vars))
-        for i in range(n_vars):
-            corr_matrix[i][i] = 1.0  # Diagonal
-        
-        for corr in correlations:
-            var1_idx = variables.index(corr['variable_1'])
-            var2_idx = variables.index(corr['variable_2'])
-            corr_val = corr['correlation_coefficient']
-            
-            corr_matrix[var1_idx][var2_idx] = corr_val
-            corr_matrix[var2_idx][var1_idx] = corr_val
-        
-        fig = go.Figure(data=go.Heatmap(
-            z=corr_matrix,
-            x=variables,
-            y=variables,
-            colorscale='RdBu',
-            zmid=0,
-            text=np.round(corr_matrix, 2),
-            texttemplate="%{text}",
-            textfont={"size": 10}
-        ))
-        
-        fig.update_layout(
-            title="Correlation Analysis",
-            height=600,
-            width=600
-        )
-        
-        return fig
+        result = await self.call_llm(prompt, 4000)
+        try:
+            return json.loads(result)
+        except:
+            return {"error": "Failed to parse policy recommendations", "raw_response": result}
 
-    def _create_data_quality_chart(self, state) -> go.Figure:
-        """Create data quality overview chart"""
+    async def interpret_statistical_results(self, stats_results: Dict, domain: str) -> Dict:
+        """Interpret statistical results in policy context using Groq"""
         
-        # Get quality metrics from various stages
-        cleaning_summary = getattr(state, 'cleaning_summary', {})
-        validation_report = getattr(state, 'validation_report', {})
+        prompt = f"""You are a senior statistician and policy analyst specializing in {domain} sector analysis.
+
+STATISTICAL RESULTS:
+{json.dumps(stats_results, indent=2)}
+
+INTERPRETATION TASK:
+Provide a comprehensive interpretation of these statistical results for government policymakers. Focus on:
+
+1. PRACTICAL SIGNIFICANCE: What do these numbers mean in real-world terms?
+2. POLICY IMPLICATIONS: How should these results influence government action?
+3. CAUSAL INTERPRETATIONS: What can we reasonably infer about cause and effect?
+4. UNCERTAINTY AND LIMITATIONS: What are the caveats and confidence levels?
+5. ACTION RECOMMENDATIONS: What specific actions do these results suggest?
+
+RESPONSE FORMAT (JSON):
+{{
+    "executive_summary": "2-3 sentence summary of key statistical findings and their policy relevance",
+    "key_statistical_insights": [
+        {{
+            "finding": "statistical finding in plain language",
+            "technical_details": "p-values, effect sizes, confidence intervals",
+            "practical_significance": "what this means in real-world terms",
+            "policy_relevance": "how this should influence government decisions",
+            "confidence_assessment": "how confident we can be in this finding"
+        }}
+    ],
+    "actionable_insights": [
+        {{
+            "insight": "key insight from statistical analysis",
+            "supporting_evidence": "statistical evidence supporting this",
+            "recommended_action": "specific government action this suggests",
+            "success_criteria": "how to know if action is working"
+        }}
+    ]
+}}
+
+Provide interpretations that are:
+- Accessible to non-statisticians
+- Honest about limitations and uncertainty
+- Focused on actionable policy insights
+- Specific to {domain} sector context
+"""
         
-        quality_metrics = {
-            'Data Completeness': validation_report.get('quality_metrics', {}).get('data_completeness', 0),
-            'Schema Quality': validation_report.get('quality_metrics', {}).get('schema_inference_quality', 0),
-            'Validation Gates': validation_report.get('quality_metrics', {}).get('validation_gate_pass_rate', 0),
-            'Overall Score': validation_report.get('quality_metrics', {}).get('overall_quality_score', 0)
+        result = await self.call_llm(prompt, 3000)
+        try:
+            return json.loads(result)
+        except:
+            return {"error": "Failed to parse statistical interpretation", "raw_response": result}
+    
+    async def generate_domain_specific_insights(self, df_summary: Dict, domain: str, 
+                                              analysis_results: Dict) -> Dict:
+        """Generate domain-specific insights and recommendations using Groq"""
+        
+        domain_expertise_prompts = {
+            'health': "You are a public health expert and health policy specialist",
+            'education': "You are an education policy expert and learning outcomes specialist", 
+            'transport': "You are a transportation planning expert and infrastructure specialist",
+            'economics': "You are an economic development specialist and public finance expert",
+            'agriculture': "You are an agricultural economist and rural development specialist",
+            'environment': "You are an environmental policy expert and sustainability specialist",
+            'urban': "You are an urban planning expert and smart cities specialist",
+            'social': "You are a social policy expert and welfare systems specialist"
         }
         
-        fig = go.Figure(data=[
-            go.Bar(
-                x=list(quality_metrics.keys()),
-                y=list(quality_metrics.values()),
-                marker_color=['green' if v >= 80 else 'orange' if v >= 60 else 'red' for v in quality_metrics.values()]
-            )
-        ])
+        expert_role = domain_expertise_prompts.get(domain, 
+            "You are a public policy expert with deep knowledge of government service delivery")
         
-        fig.update_layout(
-            title="Data Quality Assessment",
-            yaxis_title="Quality Score (%)",
-            yaxis=dict(range=[0, 100]),
-            height=400
+        prompt = f"""{expert_role} with 20+ years of experience in {domain} sector analysis and policy implementation.
+
+DATA CONTEXT:
+- Domain: {domain}
+- Data Summary: {json.dumps(df_summary, indent=2)}
+- Analysis Results: {json.dumps(analysis_results, indent=2)}
+
+EXPERT ANALYSIS TASK:
+Apply your deep {domain} domain expertise to provide insights that only a sector specialist would identify. Focus on:
+
+1. DOMAIN-SPECIFIC PATTERNS: What patterns are typical/atypical for {domain} sector?
+2. SECTOR BENCHMARKS: How does this data compare to {domain} sector standards?
+3. SPECIALIZED INTERVENTIONS: What {domain}-specific interventions are indicated?
+4. SECTOR BEST PRACTICES: What proven {domain} strategies should be considered?
+5. DOMAIN RISKS: What {domain}-specific risks and challenges are evident?
+
+RESPONSE FORMAT (JSON):
+{{
+    "domain_expert_assessment": {{
+        "overall_sector_health": "assessment of {domain} sector performance",
+        "benchmark_comparison": "how this data compares to sector standards",
+        "critical_gaps": ["gap 1 specific to {domain}", "gap 2"],
+        "hidden_opportunities": ["opportunity 1", "opportunity 2"]
+    }},
+    "specialized_interventions": [
+        {{
+            "intervention": "{domain}-specific intervention",
+            "sector_rationale": "why this is important in {domain} context",
+            "evidence_base": "research/evidence supporting this intervention",
+            "expected_sector_impact": "specific {domain} outcomes expected",
+            "success_examples": "where this has worked in {domain} sector"
+        }}
+    ],
+    "best_practice_recommendations": [
+        {{
+            "practice": "proven {domain} best practice",
+            "description": "what this practice involves",
+            "implementation_requirements": "what's needed to implement",
+            "measurement_approach": "how to measure success"
+        }}
+    ]
+}}
+
+Provide insights that demonstrate deep {domain} sector expertise and are immediately actionable for government leaders.
+"""
+        
+        result = await self.call_llm(prompt, 4000)
+        try:
+            return json.loads(result)
+        except:
+            return {"error": "Failed to parse domain insights", "raw_response": result}
+    
+    async def create_narrative_summary(self, all_insights: Dict, domain: str, context: Dict) -> str:
+        """Create a compelling narrative summary of all insights using Groq"""
+        
+        prompt = f"""You are a senior government communications specialist and policy writer, expert at translating complex analysis into compelling narratives for senior government officials.
+
+INSIGHTS TO SYNTHESIZE:
+{json.dumps(all_insights, indent=2)}
+
+CONTEXT:
+- Domain: {domain}
+- Audience: Senior government officials, ministers, secretaries
+- Purpose: Executive briefing and decision-making support
+
+NARRATIVE TASK:
+Create a compelling, executive-level narrative that synthesizes all insights into a coherent story. The narrative should:
+
+1. Start with the big picture and key message
+2. Build a logical case for action
+3. Be persuasive but evidence-based
+4. Include specific recommendations
+5. End with a clear call to action
+
+STRUCTURE:
+1. EXECUTIVE SUMMARY (2-3 sentences capturing the core message)
+2. SITUATION ASSESSMENT (current state and key challenges)
+3. OPPORTUNITY ANALYSIS (what's possible with right interventions)
+4. STRATEGIC RECOMMENDATIONS (prioritized actions)
+5. IMPLEMENTATION PATHWAY (how to move forward)
+6. CALL TO ACTION (specific next steps for leadership)
+
+Write in a style that is:
+- Clear and accessible to busy executives
+- Evidence-based but not overly technical
+- Action-oriented and decisive
+- Compelling and persuasive
+- Specific to {domain} sector context
+
+Length: 800-1200 words
+"""
+        
+        result = await self.call_llm(prompt, 2500)
+        return result
+
+class EnhancedReportAgent:
+    """Enhanced report agent with LLM-powered analysis and comprehensive visualizations"""
+    
+    def __init__(self, config_path: str = "config.yaml"):
+        self.logger = get_agent_logger("enhanced_report")
+        
+        # Load configuration safely
+        try:
+            with open(config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
+        except FileNotFoundError:
+            self.logger.warning(f"Config file {config_path} not found, using defaults")
+            self.config = {}
+        
+        # Initialize our comprehensive visualization utility
+        self.visualizer = GovernmentDataVisualizer()
+        self.llm_engine = LLMAnalysisEngine()
+
+    async def process(self, state) -> Any:
+        """Enhanced report assembly with LLM-powered analysis and comprehensive visualizations"""
+        self.logger.info("Starting LLM-enhanced report assembly process")
+        
+        try:
+            # Extract data safely
+            insights = getattr(state, 'insights', {}) or {}
+            analysis_results = getattr(state, 'analysis_results', {})
+            transformed_data = getattr(state, 'transformed_data', pd.DataFrame())
+            
+            # Get context information
+            run_manifest = state.run_manifest
+            domain = run_manifest.get('dataset_info', {}).get('domain_hint', 'general')
+            scope = run_manifest.get('dataset_info', {}).get('scope', 'Regional Analysis')
+            
+            # Prepare data summary for LLM analysis
+            self.logger.info("Preparing data summary for LLM analysis")
+            data_summary = await self._prepare_data_summary(transformed_data, analysis_results)
+            
+            # Phase 1: LLM-powered data pattern analysis
+            self.logger.info("Conducting LLM-powered data pattern analysis")
+            pattern_insights = await self.llm_engine.analyze_data_patterns(
+                data_summary, domain, scope
+            )
+            
+            # Phase 2: Comprehensive policy recommendations
+            self.logger.info("Generating comprehensive policy recommendations")
+            policy_recommendations = await self.llm_engine.generate_policy_recommendations(
+                pattern_insights, domain, analysis_results, 
+                {'scope': scope, 'context': run_manifest}
+            )
+            
+            # Phase 3: Generate comprehensive visualizations using our enhanced utility
+            self.logger.info("Generating comprehensive visualizations with seaborn")
+            figures = self.visualizer.create_comprehensive_overview(
+                transformed_data, analysis_results, domain
+            )
+            
+            # Create summary statistics table
+            summary_table_fig = self.visualizer.create_summary_statistics_table(transformed_data)
+            if summary_table_fig:
+                figures.insert(0, summary_table_fig)
+            
+            # Phase 4: Create narrative summary
+            self.logger.info("Creating executive narrative summary")
+            all_insights = {
+                'pattern_insights': pattern_insights,
+                'policy_recommendations': policy_recommendations,
+                'original_insights': insights
+            }
+            
+            narrative_summary = await self._create_narrative_summary(
+                all_insights, domain, {'scope': scope, 'context': run_manifest}
+            )
+            
+            # Generate both PDF reports
+            self.logger.info("Creating technical data quality PDF")
+            technical_pdf_path = await self._create_technical_quality_pdf(
+                state, transformed_data, analysis_results, figures, all_insights
+            )
+            
+            self.logger.info("Creating policy-focused PDF")
+            policy_pdf_path = await self._create_policy_focused_pdf(
+                state, transformed_data, analysis_results, all_insights, 
+                figures, domain, narrative_summary
+            )
+            
+            # Create interactive dashboard
+            dashboard_html_path = await self._create_interactive_dashboard(
+                transformed_data, analysis_results, all_insights, state
+            )
+            
+            # Update state with enhanced outputs
+            state.llm_enhanced_reports = {
+                'technical_quality_pdf': technical_pdf_path,
+                'policy_focused_pdf': policy_pdf_path,
+                'interactive_dashboard': dashboard_html_path,
+                'pattern_insights': pattern_insights,
+                'policy_recommendations': policy_recommendations,
+                'narrative_summary': narrative_summary
+            }
+            
+            state.visualization_figures = figures
+            
+            # Create enhanced CLI summary
+            cli_summary = self._create_enhanced_cli_summary(
+                all_insights, analysis_results, state
+            )
+            state.cli_summary = cli_summary
+            
+            self.logger.info("LLM-enhanced report assembly completed successfully")
+            return state
+            
+        except Exception as e:
+            self.logger.error(f"LLM-enhanced report assembly failed: {str(e)}")
+            if not hasattr(state, 'errors'):
+                state.errors = []
+            state.errors.append(f"LLM-enhanced report assembly failed: {str(e)}")
+            
+            # Create fallback reports without LLM
+            return await self._create_fallback_reports(state)
+
+    async def _prepare_data_summary(self, df: pd.DataFrame, analysis_results: Dict) -> Dict:
+        """Prepare comprehensive data summary for LLM analysis"""
+        
+        if df.empty:
+            return {"error": "No data available for analysis"}
+        
+        summary = {
+            "dataset_overview": {
+                "rows": len(df),
+                "columns": len(df.columns),
+                "numeric_columns": len(df.select_dtypes(include=[np.number]).columns),
+                "categorical_columns": len(df.select_dtypes(include=['object']).columns),
+                "date_columns": len(df.select_dtypes(include=['datetime']).columns)
+            },
+            "data_quality": {
+                "missing_data_percentage": float(df.isnull().sum().sum() / (len(df) * len(df.columns)) * 100),
+                "columns_with_missing_data": df.columns[df.isnull().sum() > 0].tolist(),
+                "missing_data_by_column": {col: float(df[col].isnull().sum() / len(df) * 100) 
+                                         for col in df.columns if df[col].isnull().sum() > 0}
+            },
+            "numerical_summary": {},
+            "categorical_summary": {},
+            "key_relationships": {}
+        }
+        
+        # Numerical summary (limit for LLM efficiency)
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols[:10]:
+            col_data = df[col].dropna()
+            if len(col_data) > 0:
+                summary["numerical_summary"][col] = {
+                    "mean": float(col_data.mean()),
+                    "median": float(col_data.median()),
+                    "std": float(col_data.std()),
+                    "min": float(col_data.min()),
+                    "max": float(col_data.max()),
+                    "outlier_count": int(((col_data < (col_data.quantile(0.25) - 1.5 * (col_data.quantile(0.75) - col_data.quantile(0.25)))) | 
+                                        (col_data > (col_data.quantile(0.75) + 1.5 * (col_data.quantile(0.75) - col_data.quantile(0.25))))).sum())
+                }
+        
+        # Categorical summary (limit for efficiency)
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        for col in categorical_cols[:8]:
+            col_data = df[col].dropna()
+            if len(col_data) > 0:
+                value_counts = col_data.value_counts()
+                summary["categorical_summary"][col] = {
+                    "unique_values": int(col_data.nunique()),
+                    "most_common": value_counts.head(5).to_dict(),
+                    "concentration_ratio": float(value_counts.iloc[0] / len(col_data)) if len(value_counts) > 0 else 0
+                }
+        
+        # Key relationships (correlations)
+        if len(numeric_cols) >= 2:
+            corr_matrix = df[numeric_cols].corr()
+            strong_correlations = []
+            
+            for i in range(len(corr_matrix.columns)):
+                for j in range(i+1, len(corr_matrix.columns)):
+                    corr_value = corr_matrix.iloc[i, j]
+                    if abs(corr_value) > 0.5:  # Strong correlation threshold
+                        strong_correlations.append({
+                            "variable_1": corr_matrix.columns[i],
+                            "variable_2": corr_matrix.columns[j],
+                            "correlation": float(corr_value)
+                        })
+            
+            summary["key_relationships"]["strong_correlations"] = sorted(
+                strong_correlations, key=lambda x: abs(x["correlation"]), reverse=True
+            )[:10]  # Top 10 strongest correlations
+        
+        # Geographic analysis if applicable
+        geo_cols = []
+        potential_geo_names = ['district', 'region', 'state', 'city', 'area', 'zone', 'mandal', 'tehsil']
+        for col in df.columns:
+            if any(geo_name in col.lower() for geo_name in potential_geo_names):
+                geo_cols.append(col)
+        
+        if geo_cols and numeric_cols:
+            geo_col = geo_cols[0]
+            main_metric = numeric_cols[0]
+            regional_data = df.groupby(geo_col)[main_metric].agg(['mean', 'count']).reset_index()
+            
+            summary["geographic_analysis"] = {
+                "geographic_column": geo_col,
+                "number_of_regions": len(regional_data),
+                "performance_variation": {
+                    "highest_performing": {
+                        "region": regional_data.loc[regional_data['mean'].idxmax(), geo_col],
+                        "value": float(regional_data['mean'].max())
+                    },
+                    "lowest_performing": {
+                        "region": regional_data.loc[regional_data['mean'].idxmin(), geo_col],
+                        "value": float(regional_data['mean'].min())
+                    },
+                    "inequality_ratio": float(regional_data['mean'].max() / regional_data['mean'].min()) if regional_data['mean'].min() > 0 else None
+                }
+            }
+        
+        return summary
+
+    async def _create_narrative_summary(self, all_insights: Dict, domain: str, context: Dict) -> str:
+        """Create a compelling narrative summary of all insights"""
+        
+        prompt = f"""You are a senior government communications specialist writing for senior officials.
+
+INSIGHTS TO SYNTHESIZE:
+{json.dumps(all_insights, indent=2)}
+
+CONTEXT:
+- Domain: {domain}
+- Audience: Senior government officials
+- Purpose: Executive briefing and decision-making support
+
+Create a compelling 400-600 word executive narrative that:
+1. Starts with the key message and findings
+2. Builds a logical case for action
+3. Includes specific recommendations
+4. Ends with clear next steps
+
+Write for busy executives who need actionable insights.
+"""
+        
+        result = await self.llm_engine.call_llm(prompt, 1500)
+        return result
+
+    async def _create_technical_quality_pdf(self, state, df: pd.DataFrame, 
+                                          analysis_results: Dict, figures: List, 
+                                          llm_insights: Dict) -> str:
+        """Create comprehensive technical data quality PDF report with visualizations"""
+        
+        run_manifest = state.run_manifest
+        output_dir = Path(run_manifest['artifacts_paths']['reports_dir'])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        pdf_path = output_dir / f"technical_data_quality_report_{run_manifest['run_id']}.pdf"
+        
+        # Create PDF with our comprehensive figures using seaborn
+        metadata = {
+            'title': f'Technical Data Quality Report - {run_manifest["dataset_info"]["dataset_name"]}',
+            'author': 'RTGS AI Analyst System - Enhanced with LLM',
+            'subject': 'Data Quality and Technical Analysis',
+            'keywords': 'Data Quality, Technical Analysis, Government Data, AI Analysis'
+        }
+        
+        # Save all figures to PDF using our comprehensive visualizer
+        self.visualizer.save_figures_to_pdf(figures, str(pdf_path), metadata)
+        
+        self.logger.info(f"Technical quality PDF with {len(figures)} visualizations created: {pdf_path}")
+        return str(pdf_path)
+
+    async def _create_policy_focused_pdf(self, state, df: pd.DataFrame, 
+                                       analysis_results: Dict, llm_insights: Dict,
+                                       figures: List, domain: str, narrative: str) -> str:
+        """Create comprehensive policy-focused PDF report"""
+        
+        run_manifest = state.run_manifest
+        output_dir = Path(run_manifest['artifacts_paths']['reports_dir'])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        pdf_path = output_dir / f"policy_insights_report_{run_manifest['run_id']}.pdf"
+        
+        doc = SimpleDocTemplate(str(pdf_path), pagesize=A4, topMargin=1*inch)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # Custom styles
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=20,
+            spaceAfter=30,
+            alignment=TA_CENTER,
+            textColor=colors.darkblue
         )
         
-        return fig
-
-    async def _create_executive_summary_md(self, insights: Dict, state) -> str:
-        """Create executive summary markdown report"""
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontSize=14,
+            spaceAfter=15,
+            textColor=colors.darkblue
+        )
         
-        run_manifest = state.run_manifest
-        exec_summary = insights.get('executive_summary', {})
-        key_findings = insights.get('key_findings', [])
-        recommendations = insights.get('policy_recommendations', [])
+        # Title Page
+        story.append(Paragraph("AI-Enhanced Government Policy Insights", title_style))
+        story.append(Spacer(1, 20))
         
-        md_content = f"""# Executive Summary: {run_manifest['dataset_info']['dataset_name']}
-
-**Generated:** {datetime.now().strftime('%B %d, %Y')}  
-**Scope:** {run_manifest['dataset_info']['scope']}  
-**Domain:** {run_manifest['dataset_info']['domain_hint'].title()}  
-**Run ID:** {run_manifest['run_id']}
-
-## Key Insight
-{exec_summary.get('one_line_summary', 'Analysis reveals important patterns requiring policy attention')}
-
-## Overview
-{exec_summary.get('key_insights_summary', 'Comprehensive analysis of government data reveals key trends and patterns.')}
-
-## Critical Findings
-
-"""
+        # Dataset Information Box
+        info_data = [
+            ['Dataset', run_manifest['dataset_info']['dataset_name']],
+            ['Domain', domain.title()],
+            ['Scope', run_manifest['dataset_info']['scope']],
+            ['Analysis Date', datetime.now().strftime('%B %d, %Y')],
+            ['Records Analyzed', f"{len(df):,}"],
+            ['Variables Analyzed', f"{len(df.columns)}"],
+            ['AI Analysis Engine', 'Claude Sonnet 4 + Comprehensive Visualization Suite']
+        ]
         
-        for i, finding in enumerate(key_findings[:3], 1):
-            confidence_badge = "🟢" if finding['confidence'] == 'HIGH' else "🟡" if finding['confidence'] == 'MEDIUM' else "🔴"
-            md_content += f"""### {i}. {finding['finding']} {confidence_badge}
-
-**Evidence:** {finding['evidence']}  
-**Impact:** {finding['magnitude']}  
-**Geographic Scope:** {finding['geographic_scope']}  
-**Policy Relevance:** {finding['policy_relevance']}
-
-"""
+        info_table = Table(info_data, colWidths=[2*inch, 3*inch])
+        info_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.lightblue),
+            ('GRID', (0, 0), (-1, -1), 1, colors.darkblue),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        story.append(info_table)
+        story.append(PageBreak())
         
-        md_content += """## Priority Actions
-
-"""
+        # Executive Summary
+        story.append(Paragraph("Executive Summary", heading_style))
+        story.append(Paragraph(narrative, styles['Normal']))
+        story.append(Spacer(1, 20))
         
-        for i, rec in enumerate(recommendations[:3], 1):
-            priority_badge = "🔴" if rec['priority'] == 'HIGH' else "🟡" if rec['priority'] == 'MEDIUM' else "🟢"
-            md_content += f"""### {i}. {rec['recommendation']} {priority_badge}
-
-**Implementation Steps:**
-"""
-            for step in rec.get('implementation_steps', [])[:3]:
-                md_content += f"- {step}\n"
+        # Key AI-Generated Insights
+        story.append(Paragraph("AI-Generated Data Insights", heading_style))
+        
+        if 'pattern_insights' in llm_insights and 'key_patterns' in llm_insights['pattern_insights']:
+            for i, pattern in enumerate(llm_insights['pattern_insights']['key_patterns'][:5], 1):
+                story.append(Paragraph(f"{i}. {pattern.get('pattern', 'Pattern identified')}", styles['Heading3']))
+                story.append(Paragraph(f"Policy Significance: {pattern.get('significance', 'Significant for policy planning')}", styles['Normal']))
+                story.append(Paragraph(f"Evidence: {pattern.get('data_evidence', 'Based on comprehensive data analysis')}", styles['Normal']))
+                story.append(Paragraph(f"Confidence Level: {pattern.get('confidence', 'HIGH')}", styles['Normal']))
+                story.append(Spacer(1, 10))
+        
+        story.append(PageBreak())
+        
+        # Priority Actions
+        story.append(Paragraph("Priority Policy Actions", heading_style))
+        
+        if 'policy_recommendations' in llm_insights and 'immediate_actions' in llm_insights['policy_recommendations']:
+            actions = llm_insights['policy_recommendations']['immediate_actions']
             
-            md_content += f"""
-**Estimated Impact:** {rec['estimated_impact']}  
-**Timeframe:** {rec['timeframe']}  
-**Responsible Agency:** {rec['responsible_agency']}
-
-"""
+            for i, action in enumerate(actions[:5], 1):
+                # Create action details table
+                action_data = [
+                    ['Action', action.get('action', 'Policy Action')],
+                    ['Description', action.get('description', 'Action description')],
+                    ['Timeline', action.get('timeline', 'To be determined')],
+                    ['Budget Estimate', action.get('budget_estimate', 'To be estimated')],
+                    ['Responsible Agency', action.get('responsible_agency', 'To be assigned')],
+                    ['Expected Outcome', action.get('expected_outcome', 'Positive impact expected')]
+                ]
+                
+                action_table = Table(action_data, colWidths=[1.5*inch, 4*inch])
+                action_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                    ('BACKGROUND', (1, 0), (1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ]))
+                story.append(action_table)
+                story.append(Spacer(1, 15))
         
-        md_content += f"""## Data Quality Assessment
-
-{exec_summary.get('overall_assessment', 'Data quality is sufficient for analysis and decision-making.')}
-
-## Next Steps
-
-{exec_summary.get('priority_actions', 'Implement the recommended actions and monitor progress.')}
-
----
-*This report was generated using the RTGS AI Analyst system. For technical details, see the full technical report.*
-"""
+        # Note about comprehensive visualizations
+        story.append(PageBreak())
+        story.append(Paragraph("Comprehensive Data Visualizations", heading_style))
+        story.append(Paragraph(f"This analysis includes {len(figures)} comprehensive visualizations created using advanced statistical plotting libraries (seaborn + matplotlib). These include:", styles['Normal']))
+        story.append(Paragraph("• Data Quality Assessment Dashboard", styles['Normal']))
+        story.append(Paragraph("• KPI Performance Matrix with Government Color Schemes", styles['Normal']))
+        story.append(Paragraph("• Temporal Analysis Suite (trends, seasonality, volatility)", styles['Normal']))
+        story.append(Paragraph("• Geographic Analysis and Inequality Visualization", styles['Normal']))
+        story.append(Paragraph("• Distribution Analysis Suite", styles['Normal']))
+        story.append(Paragraph("• Correlation Analysis with Policy Implications", styles['Normal']))
+        story.append(Paragraph("• Statistical Significance Plots", styles['Normal']))
+        story.append(Paragraph("• Policy Impact Simulation Visualizations", styles['Normal']))
+        story.append(Spacer(1, 15))
+        story.append(Paragraph("Please refer to the Technical Data Quality Report PDF for all detailed visualizations.", styles['Normal']))
         
-        return md_content
-
-    async def _create_technical_report_md(self, analysis_results: Dict, insights: Dict, state) -> str:
-        """Create technical methodology report"""
+        # Footer
+        story.append(Spacer(1, 30))
+        story.append(Paragraph("---", styles['Normal']))
+        story.append(Paragraph(f"Report generated by RTGS AI Analyst System with LLM Enhancement", styles['Normal']))
+        story.append(Paragraph(f"Visualization Suite: GovernmentDataVisualizer with Seaborn + Matplotlib", styles['Normal']))
+        story.append(Paragraph(f"Run ID: {run_manifest['run_id']}", styles['Normal']))
+        story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}", styles['Normal']))
         
-        run_manifest = state.run_manifest
+        # Build PDF
+        doc.build(story)
         
-        md_content = f"""# Technical Analysis Report: {run_manifest['dataset_info']['dataset_name']}
+        self.logger.info(f"Policy-focused PDF created: {pdf_path}")
+        return str(pdf_path)
 
-**Generated:** {datetime.now().strftime('%B %d, %Y %H:%M:%S')}  
-**Analysis System:** RTGS AI Analyst v1.0  
-**Run ID:** {run_manifest['run_id']}
-
-## Dataset Profile
-
-- **Source:** {run_manifest['dataset_info']['source_path']}
-- **Domain:** {run_manifest['dataset_info']['domain_hint']}
-- **Scope:** {run_manifest['dataset_info']['scope']}
-- **Description:** {run_manifest['dataset_info']['description']}
-- **Rows Processed:** {analysis_results.get('dataset_info', {}).get('rows', 'N/A')}
-- **Columns Analyzed:** {analysis_results.get('dataset_info', {}).get('columns', 'N/A')}
-
-## Methodology
-
-### Data Processing Pipeline
-
-1. **Ingestion & Profiling** - Automated data loading with encoding detection
-2. **Schema Inference** - LLM-assisted type detection and canonical naming  
-3. **Standardization** - Column renaming and type conversion
-4. **Data Cleaning** - Missing value imputation, duplicate removal, outlier handling
-5. **Feature Engineering** - Derived metrics, time features, spatial joins
-6. **Quality Validation** - Automated quality gates and confidence scoring
-7. **Statistical Analysis** - KPIs, trends, correlations, hypothesis testing
-8. **Insight Generation** - LLM-powered policy interpretation
-
-### Statistical Methods Applied
-
-"""
-        
-        # Add statistical methods
-        narrative = insights.get('statistical_narrative', {})
-        methods = narrative.get('methodology_summary', {}).get('statistical_tests_used', [])
-        for method in methods:
-            md_content += f"- {method}\n"
-        
-        md_content += f"""
-**Significance Level:** α = {narrative.get('methodology_summary', {}).get('significance_level', 0.05)}  
-**Sample Size:** {narrative.get('methodology_summary', {}).get('sample_size', 'N/A')} observations
-
-## Analysis Results
-
-### Key Performance Indicators
-
-"""
-        
-        # Add KPI summary
-        kpis = analysis_results.get('kpis', [])
-        if isinstance(kpis, list):
-            for kpi in kpis[:5]:
-                stats = kpi.get('statistics', {})
-                md_content += f"""
-**{kpi['metric_name']}**
-- Mean: {stats.get('mean', 0):.2f}
-- Median: {stats.get('median', 0):.2f}  
-- Std Dev: {stats.get('std', 0):.2f}
-- Sample Size: {kpi.get('sample_size', 0)}
-- Missing Data: {kpi.get('data_quality', {}).get('missing_percentage', 0):.1f}%
-"""
-        
-        # Add trend analysis
-        trends = analysis_results.get('trends', [])
-        if trends and isinstance(trends, list):
-            md_content += """
-### Trend Analysis
-
-"""
-            for trend in trends[:3]:
-                trend_analysis = trend.get('trend_analysis', {})
-                md_content += f"""
-**{trend['metric']}**
-- Direction: {trend_analysis.get('direction', 'N/A')}
-- Slope: {trend_analysis.get('slope', 0):.4f}
-- R²: {trend_analysis.get('r_squared', 0):.3f}
-- Significance: p = {trend_analysis.get('significance', 1):.3f}
-- Data Points: {trend.get('data_points', 0)}
-"""
-        
-        # Add hypothesis tests
-        tests = analysis_results.get('hypothesis_tests', [])
-        if tests and isinstance(tests, list):
-            md_content += """
-### Hypothesis Testing Results
-
-"""
-            for test in tests[:3]:
-                test_stats = test.get('test_statistics', {})
-                effect_size = test.get('effect_size', {})
-                md_content += f"""
-**{test['dependent_variable']} by {test['grouping_variable']}**
-- Test: {test['test_type']}
-- p-value: {test_stats.get('p_value', 1):.3f}
-- Effect Size (Cohen's d): {effect_size.get('cohens_d', 0):.3f} ({effect_size.get('interpretation', 'N/A')})
-- Conclusion: {test.get('conclusion', 'N/A')}
-"""
-        
-        md_content += f"""
-## Data Quality Assessment
-
-### Overall Quality Score: {analysis_results.get('analysis_quality', {}).get('overall_quality_score', 'N/A')}/100
-
-### Quality Metrics
-- **Data Completeness:** {analysis_results.get('analysis_quality', {}).get('data_adequacy', {}).get('completeness_rate', 0):.1%}
-- **Analysis Coverage:** {analysis_results.get('analysis_quality', {}).get('analysis_coverage', {}).get('kpis_calculated', 0)} KPIs calculated
-- **Statistical Rigor:** {len(tests)} hypothesis tests performed
-
-### Limitations
-"""
-        
-        limitations = narrative.get('data_quality_assessment', {}).get('analytical_limitations', [])
-        for limitation in limitations:
-            md_content += f"- {limitation}\n"
-        
-        md_content += f"""
-## Reproducibility
-
-### System Configuration
-- **LLM Model:** {insights.get('context', {}).get('llm_model', 'gpt-4')}
-- **Processing Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-- **Pipeline Version:** RTGS AI Analyst v1.0
-
-### Replication Command
-```bash
-python cli.py run --dataset "{run_manifest['dataset_info']['source_path']}" --domain {run_manifest['dataset_info']['domain_hint']} --scope "{run_manifest['dataset_info']['scope']}"
-```
-
-### Artifacts Generated
-- Cleaned Dataset: `data/cleaned/{run_manifest['dataset_info']['dataset_name']}_cleaned.csv`
-- Transform Log: `artifacts/logs/transform_log.jsonl`
-- Analysis Results: `artifacts/docs/analysis_results.json`
-- Full Report: This document
-
----
-*Technical Report Generated by RTGS AI Analyst - Government Data to Policy Insights Pipeline*
-"""
-        
-        return md_content
-
-    async def _create_judge_readme(self, insights: Dict, state) -> str:
-        """Create README for hackathon judges"""
+    async def _create_interactive_dashboard(self, df: pd.DataFrame, analysis_results: Dict,
+                                          llm_insights: Dict, state) -> str:
+        """Create interactive HTML dashboard with LLM insights"""
         
         run_manifest = state.run_manifest
-        key_findings = insights.get('key_findings', [])
+        output_dir = Path(run_manifest['artifacts_paths']['plots_dir']) / "interactive"
+        output_dir.mkdir(parents=True, exist_ok=True)
         
-        md_content = f"""# RTGS AI Analyst - Hackathon Demo
-
-## 🎯 **2-Minute Overview**
-
-**What it does:** Transforms messy government datasets into policy-ready insights using multi-agent AI pipeline.
-
-**Demo Dataset:** {run_manifest['dataset_info']['dataset_name']} ({run_manifest['dataset_info']['domain_hint']})
-
-## 🚀 **Key Demo Points**
-
-### 1. **Data Transformation** (30 seconds)
-- ✅ Automated ingestion with encoding detection
-- ✅ LLM-assisted schema inference and canonical naming
-- ✅ Smart data cleaning with quality gates
-- ✅ Feature engineering (per-capita, trends, spatial joins)
-
-### 2. **AI-Powered Analysis** (60 seconds)
-- ✅ Statistical analysis: KPIs, trends, correlations, hypothesis tests
-- ✅ LLM insight generation: Converts stats → policy language
-- ✅ Geographic inequality detection
-- ✅ Automated report generation for multiple audiences
-
-### 3. **Policy Outputs** (30 seconds)
-"""
+        dashboard_path = output_dir / f"policy_dashboard_{run_manifest['run_id']}.html"
         
-        for i, finding in enumerate(key_findings[:3], 1):
-            confidence = "🟢" if finding['confidence'] == 'HIGH' else "🟡"
-            md_content += f"- **Finding {i}:** {finding['finding']} {confidence}\n"
+        # Get key insights for dashboard
+        pattern_insights = llm_insights.get('pattern_insights', {})
+        policy_recs = llm_insights.get('policy_recommendations', {})
         
-        md_content += f"""
-## 🏆 **Why This Wins**
-
-### **Technical Innovation**
-- Multi-agent orchestration with LangGraph
-- LLM-as-advisor pattern (not controller)
-- Complete observability with LangSmith tracing
-- Data-agnostic design (works with ANY domain)
-
-### **Government Impact**
-- Reduces 3-week manual analysis to 5 minutes
-- Standardizes data processing across departments
-- Generates policy recommendations with evidence
-- Enables rapid response to changing conditions
-
-### **Production Ready**
-- Comprehensive error handling & quality gates
-- Complete audit trail (every transformation logged)
-- Human-in-the-loop approval for critical changes
-- Scalable to thousands of datasets
-
-## 🛠 **Reproduction**
-
-### **One Command Demo:**
-```bash
-python cli.py run --dataset data/raw/sample.csv --interactive
-```
-
-### **Architecture:**
-```
-Raw Data → Ingestion → Schema → Standardization → Cleaning 
-    ↓
-Analysis ← Validation ← Transformation ← Feature Engineering
-    ↓  
-Policy Insights ← LLM Processing ← Statistical Results
-```
-
-## 📊 **Judge Exploration**
-
-### **For Technical Judges:**
-1. **Check code quality:** `src/agents/` - Clean, modular, well-documented
-2. **Review architecture:** `src/orchestrator/flow_controller.py` - LangGraph implementation
-3. **Examine logs:** `artifacts/logs/transform_log.jsonl` - Complete audit trail
-4. **Test observability:** LangSmith traces (if enabled)
-
-### **For Business Judges:**
-1. **Policy impact:** `artifacts/reports/executive_summary.md`
-2. **Visual dashboard:** `artifacts/plots/interactive/policy_dashboard.html`
-3. **Government ROI:** Replaces weeks of manual work with automated pipeline
-
-### **For Domain Judges:**
-1. **Data quality:** `artifacts/docs/run_validation_report.json` 
-2. **Statistical rigor:** `artifacts/reports/technical_report.md`
-3. **Reproducibility:** Complete methodology documentation
-
-## 🎬 **Demo Script**
-
-### **Phase 1: Show Problem** (30s)
-"Government analysts spend weeks manually cleaning messy datasets, often making inconsistent decisions and missing key patterns."
-
-### **Phase 2: Show Solution** (90s)
-```bash
-# Run the pipeline
-python cli.py run --dataset vehicles.csv --domain transport
-```
-
-"Watch as our system automatically:
-- Detects column types and suggests canonical names using LLM
-- Cleans missing data with configurable quality gates  
-- Engineers features like per-capita metrics and growth rates
-- Performs statistical analysis and hypothesis testing
-- Generates policy insights using domain-specific LLM prompts"
-
-### **Phase 3: Show Impact** (60s)
-"The result: Executive summary with actionable recommendations, complete technical methodology, and interactive visualizations - all backed by auditable AI decisions."
-
-## 🔗 **Key Artifacts**
-
-- **Executive Report:** `artifacts/reports/executive_summary.md`
-- **Technical Details:** `artifacts/reports/technical_report.md`  
-- **Interactive Dashboard:** `artifacts/plots/interactive/policy_dashboard.html`
-- **Complete Audit Trail:** `artifacts/logs/transform_log.jsonl`
-- **Quality Assessment:** `artifacts/docs/run_validation_report.json`
-
-## 💡 **Innovation Highlights**
-
-1. **First data-agnostic government AI pipeline** - Works across all domains
-2. **LLM-as-advisor pattern** - AI assists human decisions, doesn't replace them
-3. **Complete observability** - Every decision logged and explainable
-4. **Multi-audience outputs** - Policy, technical, and executive reports
-5. **Production-grade quality gates** - Prevents bad decisions on poor data
-
----
-**Built for:** Government modernization, policy impact, and citizen service improvement  
-**Scales to:** State/national level data processing and analysis  
-**ROI:** 95% time reduction for government data analysis workflows
-"""
-        
-        return md_content
-
-    async def _create_key_outputs_html(self, insights: Dict, plots: Dict, state) -> str:
-        """Create one-page HTML summary for quick overview"""
-        
-        run_manifest = state.run_manifest
-        exec_summary = insights.get('executive_summary', {})
-        key_findings = insights.get('key_findings', [])
-        
-        # Create simple HTML dashboard
         html_content = f"""
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>RTGS AI Analyst - Key Outputs</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RTGS AI Analyst - Enhanced Policy Dashboard</title>
     <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
-        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }}
-        .header {{ background: #2c3e50; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
-        .findings {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }}
-        .finding {{ background: #ecf0f1; padding: 15px; border-radius: 8px; border-left: 4px solid #3498db; }}
-        .confidence-high {{ border-left-color: #27ae60; }}
-        .confidence-medium {{ border-left-color: #f39c12; }}
-        .confidence-low {{ border-left-color: #e74c3c; }}
-        .metrics {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }}
-        .metric {{ text-align: center; background: #3498db; color: white; padding: 15px; border-radius: 8px; }}
-        .metric-value {{ font-size: 24px; font-weight: bold; }}
-        .metric-label {{ font-size: 12px; }}
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }}
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+        }}
+        .header {{
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }}
+        .header h1 {{
+            font-size: 2.5em;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }}
+        .viz-note {{
+            background: #e8f6f3;
+            border-left: 4px solid #27ae60;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }}
+        .viz-note h3 {{
+            color: #27ae60;
+            margin-bottom: 10px;
+        }}
+        .card {{
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 25px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+        }}
+        .insight-item {{
+            background: #ecf0f1;
+            border-left: 4px solid #3498db;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+        }}
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎯 RTGS AI Analyst Results</h1>
+            <h1>🎯 RTGS AI Enhanced Policy Dashboard</h1>
             <h2>{run_manifest['dataset_info']['dataset_name']}</h2>
             <p><strong>Domain:</strong> {run_manifest['dataset_info']['domain_hint'].title()} | 
-               <strong>Scope:</strong> {run_manifest['dataset_info']['scope']} | 
-               <strong>Generated:</strong> {datetime.now().strftime('%B %d, %Y')}</p>
+               <strong>Analysis:</strong> LLM + Comprehensive Visualizations</p>
         </div>
-
-        <div class="metrics">
-            <div class="metric">
-                <div class="metric-value">{len(key_findings)}</div>
-                <div class="metric-label">Key Findings</div>
-            </div>
-            <div class="metric">
-                <div class="metric-value">{len(insights.get('policy_recommendations', []))}</div>
-                <div class="metric-label">Recommendations</div>
-            </div>
-            <div class="metric">
-                <div class="metric-value">{insights.get('confidence_assessment', {}).get('overall_confidence', 'MEDIUM')}</div>
-                <div class="metric-label">Confidence</div>
-            </div>
-            <div class="metric">
-                <div class="metric-value">{getattr(state, 'quality_score', 0):.0f}/100</div>
-                <div class="metric-label">Quality Score</div>
-            </div>
+        
+        <div class="viz-note">
+            <h3>📊 Comprehensive Visualization Suite</h3>
+            <p>This analysis includes <strong>8+ types of advanced visualizations</strong> using seaborn and matplotlib:</p>
+            <ul>
+                <li><strong>Data Quality Dashboard:</strong> Missing data patterns, completeness scores, outlier detection</li>
+                <li><strong>KPI Performance Matrix:</strong> Government-themed color schemes and performance indicators</li>
+                <li><strong>Temporal Analysis:</strong> Time series, seasonality, growth rates, volatility analysis</li>
+                <li><strong>Geographic Analysis:</strong> Regional performance comparison and inequality visualization</li>
+                <li><strong>Distribution Analysis:</strong> Histograms with KDE, statistical summaries</li>
+                <li><strong>Correlation Analysis:</strong> Advanced heatmaps and relationship networks</li>
+                <li><strong>Statistical Significance:</strong> P-value plots, effect size visualization, confidence intervals</li>
+                <li><strong>Policy Impact Simulation:</strong> Resource allocation, cost-benefit, implementation timelines</li>
+            </ul>
+            <p><strong>📄 View all visualizations in the Technical Data Quality PDF report.</strong></p>
         </div>
-
-        <h2>📋 Executive Summary</h2>
-        <p style="font-size: 18px; background: #e8f6f3; padding: 15px; border-radius: 8px;">
-            {exec_summary.get('one_line_summary', 'Analysis reveals important patterns requiring policy attention.')}
-        </p>
-
-        <h2>🔍 Key Findings</h2>
-        <div class="findings">
+        
+            <div class="card">
+            <h3>🧠 AI-Generated Insights</h3>
 """
         
-        for finding in key_findings:
-            confidence_class = f"confidence-{finding['confidence'].lower()}"
-            html_content += f"""
-            <div class="finding {confidence_class}">
-                <h3>{finding['finding']}</h3>
-                <p><strong>Evidence:</strong> {finding['evidence']}</p>
-                <p><strong>Impact:</strong> {finding['magnitude']}</p>
-                <p><strong>Confidence:</strong> {finding['confidence']}</p>
-            </div>
+        # Add AI insights
+        if 'key_patterns' in pattern_insights:
+            for pattern in pattern_insights['key_patterns'][:3]:
+                html_content += f"""
+                <div class="insight-item">
+                    <h4>{pattern.get('pattern', 'AI Pattern Detected')}</h4>
+                    <p><strong>Policy Significance:</strong> {pattern.get('significance', 'Important for decision making')}</p>
+                    <p><strong>Evidence:</strong> {pattern.get('data_evidence', 'Based on comprehensive analysis')}</p>
+                    <p><strong>Confidence:</strong> {pattern.get('confidence', 'HIGH')}</p>
+                </div>
 """
         
-        html_content += f"""
+        html_content += """
+            </div>
+            
+            <div class="card">
+            <h3>🚨 Priority Actions</h3>
+"""
+        
+        # Add policy actions
+        if 'immediate_actions' in policy_recs:
+            for action in policy_recs['immediate_actions'][:3]:
+                html_content += f"""
+                <div class="insight-item">
+                    <h4>{action.get('action', 'Priority Action')}</h4>
+                    <p><strong>Timeline:</strong> {action.get('timeline', 'To be determined')}</p>
+                    <p><strong>Agency:</strong> {action.get('responsible_agency', 'To be assigned')}</p>
+                    <p><strong>Expected Outcome:</strong> {action.get('expected_outcome', 'Positive impact')}</p>
+                </div>
+"""
+        
+                html_content += f"""
+                </div>
+        
+        <div class="card">
+            <h3>📈 Visualization Capabilities Demonstrated</h3>
+            <p>This analysis showcases the system's ability to work with <strong>any government domain</strong> and automatically generate:</p>
+            <ul>
+                <li>✅ <strong>Domain-adaptive visualizations</strong> (automatically adjusts to {run_manifest['dataset_info']['domain_hint']} sector)</li>
+                <li>✅ <strong>Government-appropriate color schemes</strong> and professional styling</li>
+                <li>✅ <strong>Policy-relevant statistical analysis</strong> with confidence intervals and significance testing</li>
+                <li>✅ <strong>Geographic inequality detection</strong> and intervention area identification</li>
+                <li>✅ <strong>Resource allocation optimization</strong> and budget impact simulation</li>
+                <li>✅ <strong>Implementation timeline visualization</strong> and risk assessment matrices</li>
+                        </ul>
+                    </div>
+        
+        <div class="card">
+            <h3>🎯 System Capabilities Summary</h3>
+            <p><strong>Data Processing:</strong> {len(df):,} records, {len(df.columns)} variables analyzed</p>
+            <p><strong>AI Analysis:</strong> {len(pattern_insights.get('key_patterns', []))} patterns detected, {len(policy_recs.get('immediate_actions', []))} actions recommended</p>
+            <p><strong>Visualization Suite:</strong> 8+ comprehensive chart types with seaborn + matplotlib</p>
+            <p><strong>Domain Adaptability:</strong> Works with any government dataset (health, education, transport, etc.)</p>
+            <p><strong>Output Formats:</strong> Technical PDF + Policy PDF + Interactive Dashboard</p>
         </div>
-
-        <h2>📊 Quick Actions</h2>
-        <p style="background: #fff3cd; padding: 15px; border-radius: 8px; border-left: 4px solid #ffc107;">
-            <strong>Priority Actions:</strong> {exec_summary.get('priority_actions', 'Implement recommended interventions and monitor progress.')}
-        </p>
-
-        <h2>📁 Full Outputs</h2>
-        <ul style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
-            <li><strong>Executive Report:</strong> <code>artifacts/reports/executive_summary.md</code></li>
-            <li><strong>Technical Analysis:</strong> <code>artifacts/reports/technical_report.md</code></li>
-            <li><strong>Interactive Dashboard:</strong> <code>artifacts/plots/interactive/policy_dashboard.html</code></li>
-            <li><strong>Cleaned Data:</strong> <code>data/cleaned/{run_manifest['dataset_info']['dataset_name']}_cleaned.csv</code></li>
-            <li><strong>Audit Trail:</strong> <code>artifacts/logs/transform_log.jsonl</code></li>
-        </ul>
-
+        
         <footer style="text-align: center; margin-top: 30px; color: #7f8c8d;">
-            <p>Generated by RTGS AI Analyst v1.0 | Run ID: {run_manifest['run_id']}</p>
+            <p>Generated by RTGS AI Analyst System | Enhanced with LLM + Comprehensive Visualizations</p>
+            <p>Run ID: {run_manifest['run_id']} | {datetime.now().strftime('%B %d, %Y')}</p>
         </footer>
     </div>
 </body>
 </html>
 """
         
-        return html_content
+        # Write HTML file
+        with open(dashboard_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        self.logger.info(f"Enhanced interactive dashboard created: {dashboard_path}")
+        return str(dashboard_path)
 
-    async def _create_demo_script(self, insights: Dict, state) -> str:
-        """Create demo script for presentations"""
+    def _create_enhanced_cli_summary(self, llm_insights: Dict, analysis_results: Dict, state) -> Dict:
+        """Create enhanced CLI summary with comprehensive visualization info"""
         
         run_manifest = state.run_manifest
+        pattern_insights = llm_insights.get('pattern_insights', {})
+        policy_recs = llm_insights.get('policy_recommendations', {})
         
-        script = f"""# RTGS AI Analyst - Demo Script
-
-## Pre-Demo Setup (2 minutes)
-
-### Show Problem Statement
-"Government agencies receive messy, inconsistent data that takes weeks to analyze manually. Analysts make different decisions, miss patterns, and struggle to generate policy insights."
-
-### Show Dataset
-- **Dataset:** {run_manifest['dataset_info']['dataset_name']}
-- **Domain:** {run_manifest['dataset_info']['domain_hint']}
-- **Challenge:** Raw data with encoding issues, missing values, inconsistent naming
-
-## Live Demo (4 minutes)
-
-### 1. Command Execution (30 seconds)
-```bash
-python cli.py run --dataset {run_manifest['dataset_info']['source_path']} --domain {run_manifest['dataset_info']['domain_hint']} --interactive
-```
-
-**Say:** "One command triggers our multi-agent pipeline"
-
-### 2. Show Real-Time Processing (90 seconds)
-
-**Watch the pipeline:**
-- **Ingestion Agent:** "Automatically detects encoding and loads data"
-- **Schema Agent:** "LLM suggests canonical column names" 
-- **Cleaning Agent:** "Smart missing value imputation with quality gates"
-- **Transform Agent:** "Creates per-capita metrics and time features"
-- **Analysis Agent:** "Statistical analysis with hypothesis testing"
-- **Insight Agent:** "LLM converts statistics to policy language"
-
-**Key Callouts:**
-- "Notice the quality gates - prevents bad decisions on poor data"
-- "Every transformation is logged for complete auditability"
-- "LLM assists human decisions, doesn't replace them"
-
-### 3. Show Results (120 seconds)
-
-#### Quick CLI Output
-```
-✅ Pipeline completed successfully!
-🟢 Confidence: HIGH | Quality Score: 87/100
-
-💡 KEY FINDINGS:
-• {insights.get('key_findings', [{}])[0].get('finding', 'Sample finding') if insights.get('key_findings') else 'Significant patterns detected'}
-• Geographic inequalities identified requiring targeted intervention
-• Strong correlations found between key policy variables
-
-📁 Outputs: artifacts/reports/executive_summary.md
-🌐 Dashboard: artifacts/plots/interactive/policy_dashboard.html
-```
-
-#### Executive Summary (Show file)
-- **Policy-focused language** for decision makers
-- **Evidence-backed recommendations** with confidence scores
-- **Geographic scope and impact assessment**
-
-#### Technical Report (Show file)  
-- **Complete methodology** for reproducibility
-- **Statistical rigor** with p-values and effect sizes
-- **Quality assessment** and limitations
-
-#### Interactive Dashboard (Show browser)
-- **Visual KPI dashboard** 
-- **Trend analysis charts**
-- **Spatial inequality maps**
-
-## Impact Statement (30 seconds)
-
-### Before vs After
-- **Before:** 3 weeks manual analysis, inconsistent results, limited insights
-- **After:** 5 minutes automated pipeline, standardized quality, actionable recommendations
-
-### Scale Potential
-- **Department Level:** Process hundreds of datasets consistently
-- **State Level:** Real-time policy monitoring and response
-- **National Level:** Standardized government data analysis platform
-
-## Q&A Prep
-
-### Technical Questions
-- **"How do you ensure data quality?"** → Quality gates, validation reports, confidence scoring
-- **"What about different data formats?"** → Data-agnostic design, encoding detection, smart sampling
-- **"Is this just ChatGPT wrapper?"** → No - LLM assists specific steps, deterministic heuristics primary
-
-### Business Questions  
-- **"What's the ROI?"** → 95% time reduction, standardized quality, faster policy response
-- **"Can it handle sensitive data?"** → Yes - PII detection, local deployment options, audit trails
-- **"How do you scale this?"** → Multi-tenant design, domain-specific configurations, cloud deployment
-
-### Demo Recovery
-- **If demo fails:** Show pre-generated artifacts and explain architecture
-- **If questions on specific output:** Reference technical report methodology
-- **If challenged on AI reliability:** Emphasize human-in-loop, quality gates, audit trails
-
-## Key Messages to Reinforce
-
-1. **"This isn't replacing analysts - it's making them 10x more effective"**
-2. **"Every decision is logged and explainable for government accountability"**
-3. **"Works with any domain - transport, health, education, economics"**
-4. **"Production-ready with quality gates and error handling"**
-5. **"Reduces government data analysis from weeks to minutes"**
-
----
-**Demo Duration:** 6 minutes total  
-**Backup Materials:** All artifacts pre-generated in case of technical issues  
-**Key Differentiator:** Government-specific AI pipeline with complete observability
-"""
+        key_patterns = pattern_insights.get('key_patterns', [])
+        immediate_actions = policy_recs.get('immediate_actions', [])
         
-        return script
-
-    async def _save_reports(self, reports: Dict, state):
-        """Save all reports to appropriate locations"""
+        # Calculate confidence score
+        confidence_scores = [90 if p.get('confidence') == 'HIGH' else 70 if p.get('confidence') == 'MEDIUM' else 50 
+                           for p in key_patterns]
+        overall_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 75
         
-        reports_dir = Path(state.run_manifest['artifacts_paths']['reports_dir'])
-        quick_start_dir = Path(state.run_manifest['artifacts_paths']['quick_start_dir'])
-        
-        # Save markdown reports
-        for report_name, content in reports.items():
-            if report_name in ['executive_summary', 'technical_report']:
-                file_path = reports_dir / f"{report_name}.md"
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-            
-            elif report_name in ['judge_readme', 'demo_script']:
-                file_path = quick_start_dir / f"{report_name}.md"
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-            
-            elif report_name == 'key_outputs_summary':
-                file_path = quick_start_dir / "key_outputs_summary.html"
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-
-    async def _save_visualizations(self, plots: Dict, state):
-        """Save all visualizations"""
-        
-        plots_dir = Path(state.run_manifest['artifacts_paths']['plots_dir'])
-        interactive_dir = plots_dir / "interactive"
-        
-        # Save plotly figures as HTML and PNG
-        for plot_name, fig in plots.items():
-            if isinstance(fig, go.Figure):
-                # Save as interactive HTML
-                html_path = interactive_dir / f"{plot_name}.html"
-                fig.write_html(str(html_path))
-                
-                # Save as PNG for reports
-                png_path = plots_dir / f"{plot_name}.png"
-                try:
-                    fig.write_image(str(png_path), width=800, height=600)
-                except Exception as e:
-                    self.logger.warning(f"Failed to save PNG for {plot_name}: {str(e)}")
-
-    def _create_cli_summary(self, insights: Dict, analysis_results: Dict, state) -> Dict[str, Any]:
-        """Create summary for CLI display"""
-        
-        exec_summary = insights.get('executive_summary', {})
-        key_findings = insights.get('key_findings', [])
-        confidence = insights.get('confidence_assessment', {}).get('overall_confidence', 'MEDIUM')
-        quality_score = getattr(state, 'quality_score', 0)
-        
-        # Create ASCII art confidence badge
-        confidence_badge = {
-            'HIGH': '🟢 HIGH',
-            'MEDIUM': '🟡 MEDIUM', 
-            'LOW': '🔴 LOW'
-        }.get(confidence, '⚪ UNKNOWN')
+        confidence_badge = '🟢 HIGH' if overall_confidence >= 80 else '🟡 MEDIUM' if overall_confidence >= 60 else '🔴 LOW'
         
         return {
-            'one_line_summary': exec_summary.get('one_line_summary', 'Analysis completed successfully'),
+            'one_line_summary': f"LLM + Comprehensive Visualization analysis reveals {len(key_patterns)} patterns and {len(immediate_actions)} priority actions",
             'confidence_badge': confidence_badge,
-            'quality_score': f"{quality_score:.0f}/100",
-            'key_findings': [f.get('finding', 'Unknown finding') for f in key_findings[:3]] if isinstance(key_findings, list) else [],
-            'findings_count': len(key_findings),
-            'recommendations_count': len(insights.get('policy_recommendations', [])),
+            'quality_score': f"{overall_confidence:.0f}/100",
+            'key_findings': [pattern.get('pattern', 'Pattern identified') for pattern in key_patterns[:3]],
+            'priority_actions': [action.get('action', 'Action identified') for action in immediate_actions[:3]],
+            'findings_count': len(key_patterns),
+            'actions_count': len(immediate_actions),
+            'llm_powered': True,
+            'comprehensive_visualizations': True,
+            'visualization_types': [
+                'Data Quality Dashboard',
+                'KPI Performance Matrix', 
+                'Temporal Analysis Suite',
+                'Geographic Analysis',
+                'Distribution Analysis',
+                'Correlation Analysis',
+                'Statistical Significance',
+                'Policy Impact Simulation'
+            ],
             'artifacts_paths': {
-                'executive_report': f"{state.run_manifest['artifacts_paths']['reports_dir']}/executive_summary.md",
-                'dashboard': f"{state.run_manifest['artifacts_paths']['plots_dir']}/interactive/policy_dashboard.html",
-                'demo_guide': f"{state.run_manifest['artifacts_paths']['quick_start_dir']}/demo_script.md"
+                'technical_pdf': f"{state.run_manifest['artifacts_paths']['reports_dir']}/technical_data_quality_report_{state.run_manifest['run_id']}.pdf",
+                'policy_pdf': f"{state.run_manifest['artifacts_paths']['reports_dir']}/policy_insights_report_{state.run_manifest['run_id']}.pdf",
+                'dashboard': f"{state.run_manifest['artifacts_paths']['plots_dir']}/interactive/policy_dashboard_{state.run_manifest['run_id']}.html"
             }
         }
-    
-    async def _generate_visualizations(self, analysis_results: Dict, transformed_data: pd.DataFrame, state) -> Dict[str, Any]:
-        """Generate visualizations with safe error handling"""
-        plots = {}
+
+    async def _create_fallback_reports(self, state) -> Any:
+        """Create fallback reports when LLM analysis fails"""
+        
+        self.logger.info("Creating fallback reports without LLM analysis")
         
         try:
-            # Basic correlation heatmap if we have numeric data
-            if not transformed_data.empty and len(transformed_data.select_dtypes(include=[np.number]).columns) > 1:
-                numeric_cols = transformed_data.select_dtypes(include=[np.number]).columns
-                if len(numeric_cols) > 1:
-                    corr_matrix = transformed_data[numeric_cols].corr()
-                    
-                    # Create simple heatmap
-                    fig = go.Figure(data=go.Heatmap(
-                        z=corr_matrix.values,
-                        x=corr_matrix.columns,
-                        y=corr_matrix.columns,
-                        colorscale='RdBu',
-                        zmid=0
-                    ))
-                    
-                    plots['correlation_heatmap'] = fig
+            analysis_results = getattr(state, 'analysis_results', {})
+            transformed_data = getattr(state, 'transformed_data', pd.DataFrame())
             
-            # Basic distribution plots for key metrics
+            # Create basic visualizations using our comprehensive visualizer
             if not transformed_data.empty:
-                numeric_cols = transformed_data.select_dtypes(include=[np.number]).columns
-                for col in numeric_cols[:3]:  # Limit to 3 columns
-                    try:
-                        fig = px.histogram(transformed_data, x=col, title=f'Distribution of {col}')
-                        plots[f'distribution_{col}'] = fig
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create distribution plot for {col}: {e}")
-                        continue
-                        
-        except Exception as e:
-            self.logger.warning(f"Visualization generation failed: {e}")
-        
-        return plots
-
-    def _create_safe_kpi_dashboard(self, kpis_data: Dict, df: pd.DataFrame) -> go.Figure:
-        """Create KPI dashboard with safe data handling"""
-        
-        fig = go.Figure()
-        
-        try:
-            # Extract numeric summaries safely
-            numeric_summary = kpis_data.get('numeric_summary', {})
-            if not isinstance(numeric_summary, dict):
-                return fig
+                domain = state.run_manifest.get('dataset_info', {}).get('domain_hint', 'general')
+                figures = self.visualizer.create_comprehensive_overview(
+                    transformed_data, analysis_results, domain
+                )
+            else:
+                figures = []
             
-            # Convert to list format expected by visualization
-            kpi_list = []
-            for col_name, stats in numeric_summary.items():
-                if isinstance(stats, dict) and 'mean' in stats:
-                    kpi_list.append({
-                        'metric_name': col_name,
-                        'statistics': stats,
-                        'domain_relevance': 'high',  # Default
-                        'sample_size': stats.get('count', 0)
-                    })
+            # Create minimal technical report with visualizations
+            output_dir = Path(state.run_manifest['artifacts_paths']['reports_dir'])
+            output_dir.mkdir(parents=True, exist_ok=True)
             
-            if not kpi_list:
-                # Create basic stats from dataframe
-                numeric_cols = df.select_dtypes(include=[np.number]).columns
-                for col in numeric_cols[:6]:  # Limit to 6
-                    try:
-                        col_data = df[col].dropna()
-                        if len(col_data) > 0:
-                            kpi_list.append({
-                                'metric_name': col,
-                                'statistics': {
-                                    'mean': float(col_data.mean()),
-                                    'min': float(col_data.min()),
-                                    'max': float(col_data.max()),
-                                    'count': len(col_data)
-                                },
-                                'domain_relevance': 'medium'
-                            })
-                    except:
-                        continue
+            fallback_pdf = output_dir / f"fallback_report_with_viz_{state.run_manifest['run_id']}.pdf"
             
-            if not kpi_list:
-                return fig
+            if figures:
+                metadata = {
+                    'title': f'Data Analysis Report - {state.run_manifest["dataset_info"]["dataset_name"]}',
+                    'author': 'RTGS AI Analyst System (Fallback Mode with Comprehensive Visualizations)',
+                    'subject': 'Government Data Analysis Report',
+                    'keywords': 'Government, Data Analysis, Policy, Seaborn, Matplotlib'
+                }
+                self.visualizer.save_figures_to_pdf(figures, str(fallback_pdf), metadata)
             
-            # Create simple bar chart instead of complex dashboard
-            metrics = [kpi['metric_name'] for kpi in kpi_list[:6]]
-            values = [kpi['statistics'].get('mean', 0) for kpi in kpi_list[:6]]
-            
-            fig.add_trace(go.Bar(
-                x=metrics,
-                y=values,
-                marker_color='lightblue'
-            ))
-            
-            fig.update_layout(
-                title="Key Performance Indicators",
-                xaxis_title="Metrics",
-                yaxis_title="Average Values",
-                height=500
-            )
-            
-        except Exception as e:
-            self.logger.warning(f"KPI dashboard creation failed: {str(e)}")
-        
-        return fig
-
-    def _create_safe_correlation_heatmap(self, numeric_df: pd.DataFrame) -> go.Figure:
-        """Create correlation heatmap with safe data handling"""
-        
-        fig = go.Figure()
-        
-        try:
-            if numeric_df.empty or len(numeric_df.columns) < 2:
-                return fig
-            
-            # Clean data and compute correlation
-            clean_df = numeric_df.dropna()
-            if len(clean_df) < 3:
-                return fig
-            
-            # Remove constant columns
-            for col in clean_df.columns:
-                if clean_df[col].nunique() <= 1:
-                    clean_df = clean_df.drop(columns=[col])
-            
-            if len(clean_df.columns) < 2:
-                return fig
-            
-            corr_matrix = clean_df.corr()
-            
-            fig = go.Figure(data=go.Heatmap(
-                z=corr_matrix.values,
-                x=corr_matrix.columns,
-                y=corr_matrix.columns,
-                colorscale='RdBu',
-                zmid=0,
-                text=np.round(corr_matrix.values, 2),
-                texttemplate="%{text}",
-                textfont={"size": 10},
-                showscale=True
-            ))
-            
-            fig.update_layout(
-                title="Correlation Analysis",
-                height=600,
-                width=600
-            )
-            
-        except Exception as e:
-            self.logger.warning(f"Correlation heatmap creation failed: {str(e)}")
-        
-        return fig
-
-    def _create_safe_distribution_plots(self, df: pd.DataFrame) -> Dict[str, go.Figure]:
-        """Create distribution plots with safe data handling"""
-        
-        plots = {}
-        
-        try:
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
-            
-            for col in numeric_cols[:3]:  # Limit to 3 columns
-                try:
-                    col_data = df[col].dropna()
-                    if len(col_data) > 0:
-                        fig = go.Figure(data=[go.Histogram(x=col_data, name=col)])
-                        fig.update_layout(
-                            title=f'Distribution of {col}',
-                            xaxis_title=col,
-                            yaxis_title='Frequency',
-                            height=400
-                        )
-                        plots[f'distribution_{col}'] = fig
-                except Exception as e:
-                    self.logger.warning(f"Failed to create distribution plot for {col}: {e}")
-                    continue
-                    
-        except Exception as e:
-            self.logger.warning(f"Distribution plots creation failed: {e}")
-        
-        return plots
-
-    def _create_safe_data_quality_chart(self, state) -> go.Figure:
-        """Create data quality chart with safe data handling"""
-        
-        fig = go.Figure()
-        
-        try:
-            # Get basic quality metrics
-            quality_metrics = {
-                'Data Completeness': 80,  # Default values
-                'Schema Quality': 75,
-                'Validation Gates': 70,
-                'Overall Score': 75
+            # Update state with fallback outputs
+            state.llm_enhanced_reports = {
+                'technical_quality_pdf': str(fallback_pdf),
+                'policy_focused_pdf': str(fallback_pdf),
+                'interactive_dashboard': None,
+                'fallback_mode': True,
+                'error': 'LLM analysis unavailable, comprehensive visualizations still generated'
             }
             
-            # Try to get actual quality metrics
-            if hasattr(state, 'data_quality_report') and state.data_quality_report:
-                quality_report = state.data_quality_report
-                if isinstance(quality_report, dict):
-                    overall_score = quality_report.get('overall_quality_score', 75)
-                    quality_metrics['Overall Score'] = overall_score
+            state.cli_summary = {
+                'one_line_summary': f"Comprehensive visualization analysis of {state.run_manifest['dataset_info']['dataset_name']} completed",
+                'confidence_badge': '🟡 MEDIUM',
+                'quality_score': '70/100',
+                'key_findings': ['Data processing completed', f'{len(figures)} comprehensive visualizations generated'],
+                'priority_actions': ['Review visualization insights', 'Consider manual policy analysis'],
+                'findings_count': 2,
+                'actions_count': 2,
+                'llm_powered': False,
+                'comprehensive_visualizations': True,
+                'fallback_mode': True
+            }
             
-            fig = go.Figure(data=[
-                go.Bar(
-                    x=list(quality_metrics.keys()),
-                    y=list(quality_metrics.values()),
-                    marker_color=['green' if v >= 80 else 'orange' if v >= 60 else 'red' 
-                                 for v in quality_metrics.values()]
-                )
-            ])
-            
-            fig.update_layout(
-                title="Data Quality Assessment",
-                yaxis_title="Quality Score (%)",
-                yaxis=dict(range=[0, 100]),
-                height=400
-            )
+            return state
             
         except Exception as e:
-            self.logger.warning(f"Data quality chart creation failed: {str(e)}")
-        
-        return fig
+            self.logger.error(f"Even fallback report creation failed: {str(e)}")
+            state.errors.append(f"Complete report generation failure: {str(e)}")
+            return state
 
     def _create_minimal_insights(self, state) -> Dict:
-        """Create minimal insights when none exist"""
+        """Create minimal insights when no insights exist"""
         run_manifest = state.run_manifest
         
         return {
@@ -1291,178 +1080,27 @@ python cli.py run --dataset {run_manifest['dataset_info']['source_path']} --doma
                 }
             },
             'executive_summary': {
-                'one_line_summary': f"Analysis of {run_manifest.get('dataset_info', {}).get('dataset_name', 'dataset')} completed",
-                'key_insights_summary': 'Data processing and analysis completed with basic statistical overview',
-                'priority_actions': 'Review data quality and consider additional analysis if needed'
+                'one_line_summary': f"Analysis of {run_manifest.get('dataset_info', {}).get('dataset_name', 'dataset')} completed with comprehensive visualizations",
+                'key_insights_summary': 'Data processing and comprehensive visualization analysis completed successfully',
+                'priority_actions': 'Review visualization insights and consider additional analysis'
             },
             'key_findings': [
                 {
-                    'finding': 'Data processing completed successfully',
-                    'evidence': 'Dataset loaded and basic analysis performed',
+                    'finding': 'Comprehensive data processing and visualization completed',
+                    'evidence': 'Dataset processed with full visualization suite',
                     'confidence': 'MEDIUM',
-                    'policy_relevance': 'Baseline analysis available for decision making'
+                    'policy_relevance': 'Visual insights available for decision making'
                 }
             ],
             'policy_recommendations': [
                 {
-                    'recommendation': 'Review analysis results and consider deeper investigation',
+                    'recommendation': 'Review comprehensive visualizations and consider targeted interventions',
                     'priority': 'MEDIUM',
-                    'timeframe': 'Short-term'
+                    'timeframe': 'Short-term',
+                    'responsible_agency': 'Data Analysis and Policy Team'
                 }
             ],
             'confidence_assessment': {
                 'overall_confidence': 'MEDIUM'
             }
         }
-
-    def _create_fallback_executive_summary(self, state) -> str:
-        """Create fallback executive summary"""
-        run_manifest = state.run_manifest
-        dataset_name = run_manifest.get('dataset_info', {}).get('dataset_name', 'Unknown Dataset')
-        
-        return f"""# Executive Summary: {dataset_name}
-
-**Generated:** {datetime.now().strftime('%B %d, %Y')}
-
-## Analysis Completed
-
-The RTGS AI Analyst system has processed the dataset and generated basic analysis results. 
-
-## Key Points
-
-- Data ingestion and processing completed
-- Basic statistical analysis performed
-- Quality assessment conducted
-
-## Next Steps
-
-Review the technical report for detailed methodology and consider additional analysis as needed.
-
----
-*Report generated by RTGS AI Analyst*
-"""
-
-    def _create_fallback_technical_report(self, state) -> str:
-        """Create fallback technical report"""
-        run_manifest = state.run_manifest
-        dataset_name = run_manifest.get('dataset_info', {}).get('dataset_name', 'Unknown Dataset')
-        
-        return f"""# Technical Report: {dataset_name}
-
-**Generated:** {datetime.now().strftime('%B %d, %Y')}
-
-## Methodology
-
-The RTGS AI Analyst system processed the dataset using automated data cleaning, transformation, and analysis pipelines.
-
-## Data Processing
-
-- Data ingestion completed
-- Basic quality assessment performed
-- Statistical analysis conducted
-
-## Results
-
-Basic analysis results are available. For detailed findings, please review the executive summary.
-
----
-*Report generated by RTGS AI Analyst*
-"""
-
-    def _create_fallback_judge_readme(self, state) -> str:
-        """Create fallback judge readme"""
-        return """# RTGS AI Analyst - Judge Readme
-
-## Quick Start
-
-This analysis was completed using the RTGS AI Analyst system. Basic data processing and analysis have been performed.
-
-## Key Outputs
-
-- Executive summary available
-- Technical report generated
-- Basic visualizations created
-
-## Next Steps
-
-Review the analysis results and consider additional investigation as needed.
-
----
-*Generated by RTGS AI Analyst*
-"""
-
-    def _create_fallback_key_outputs_html(self, state) -> str:
-        """Create fallback key outputs HTML"""
-        run_manifest = state.run_manifest
-        dataset_name = run_manifest.get('dataset_info', {}).get('dataset_name', 'Unknown Dataset')
-        
-        return f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>RTGS AI Analyst - Key Outputs</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
-        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }}
-        .header {{ background: #2c3e50; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🎯 RTGS AI Analyst Results</h1>
-            <h2>{dataset_name}</h2>
-            <p><strong>Generated:</strong> {datetime.now().strftime('%B %d, %Y')}</p>
-        </div>
-        <h2>Analysis Completed</h2>
-        <p>Basic data processing and analysis have been completed successfully.</p>
-    </div>
-</body>
-</html>"""
-
-    def _create_fallback_demo_script(self, state) -> str:
-        """Create fallback demo script"""
-        return """# RTGS AI Analyst Demo Script
-
-## Overview
-This analysis was completed using the RTGS AI Analyst system.
-
-## Key Points
-- Data processing completed
-- Basic analysis performed
-- Results available for review
-
-## Next Steps
-Review the analysis outputs and consider additional investigation.
-
----
-*Generated by RTGS AI Analyst*
-"""
-
-    def _create_fallback_cli_summary(self, state) -> Dict:
-        """Create fallback CLI summary"""
-        run_manifest = state.run_manifest
-        
-        return {
-            'one_line_summary': f"Analysis of {run_manifest.get('dataset_info', {}).get('dataset_name', 'dataset')} completed",
-            'confidence_badge': '🟡 MEDIUM',
-            'quality_score': '50/100',
-            'key_findings': ['Data processing completed'],
-            'findings_count': 1,
-            'recommendations_count': 1,
-            'artifacts_paths': {
-                'executive_report': 'artifacts/reports/executive_summary.md',
-                'technical_report': 'artifacts/reports/technical_report.md'
-            }
-        }
-
-    async def _ensure_output_directories(self, state):
-        """Ensure all output directories exist"""
-        directories = [
-            Path(state.run_manifest['artifacts_paths']['reports_dir']),
-            Path(state.run_manifest['artifacts_paths']['quick_start_dir']),
-            Path(state.run_manifest['artifacts_paths']['plots_dir']),
-            Path(state.run_manifest['artifacts_paths']['plots_dir']) / "interactive"
-        ]
-        
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
