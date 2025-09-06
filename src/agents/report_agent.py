@@ -29,7 +29,7 @@ class ReportAgent:
             self.config = yaml.safe_load(f)
     
     async def process(self, state) -> Any:
-        """Main report assembly processing pipeline"""
+        """Main report assembly processing pipeline with robust error handling"""
         self.logger.info("Starting report assembly process")
         
         try:
@@ -41,8 +41,12 @@ class ReportAgent:
             if not insights:
                 raise ValueError("No insights available for report generation")
             
-            # Generate visualizations
-            plots = await self._generate_visualizations(analysis_results, transformed_data, state)
+            # Generate visualizations with error handling
+            try:
+                plots = await self._generate_visualizations(analysis_results, transformed_data, state)
+            except Exception as e:
+                self.logger.warning(f"Visualization generation failed: {str(e)}")
+                plots = {}
             
             # Create different report formats
             reports = {}
@@ -943,7 +947,7 @@ python cli.py run --dataset {run_manifest['dataset_info']['source_path']} --doma
             'one_line_summary': exec_summary.get('one_line_summary', 'Analysis completed successfully'),
             'confidence_badge': confidence_badge,
             'quality_score': f"{quality_score:.0f}/100",
-            'key_findings': [f['finding'] for f in key_findings[:3]],
+            'key_findings': [f.get('finding', 'Unknown finding') for f in key_findings[:3]] if isinstance(key_findings, list) else [],
             'findings_count': len(key_findings),
             'recommendations_count': len(insights.get('policy_recommendations', [])),
             'artifacts_paths': {
@@ -952,3 +956,41 @@ python cli.py run --dataset {run_manifest['dataset_info']['source_path']} --doma
                 'demo_guide': f"{state.run_manifest['artifacts_paths']['quick_start_dir']}/demo_script.md"
             }
         }
+    
+    async def _generate_visualizations(self, analysis_results: Dict, transformed_data: pd.DataFrame, state) -> Dict[str, Any]:
+        """Generate visualizations with safe error handling"""
+        plots = {}
+        
+        try:
+            # Basic correlation heatmap if we have numeric data
+            if not transformed_data.empty and len(transformed_data.select_dtypes(include=[np.number]).columns) > 1:
+                numeric_cols = transformed_data.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols) > 1:
+                    corr_matrix = transformed_data[numeric_cols].corr()
+                    
+                    # Create simple heatmap
+                    fig = go.Figure(data=go.Heatmap(
+                        z=corr_matrix.values,
+                        x=corr_matrix.columns,
+                        y=corr_matrix.columns,
+                        colorscale='RdBu',
+                        zmid=0
+                    ))
+                    
+                    plots['correlation_heatmap'] = fig
+            
+            # Basic distribution plots for key metrics
+            if not transformed_data.empty:
+                numeric_cols = transformed_data.select_dtypes(include=[np.number]).columns
+                for col in numeric_cols[:3]:  # Limit to 3 columns
+                    try:
+                        fig = px.histogram(transformed_data, x=col, title=f'Distribution of {col}')
+                        plots[f'distribution_{col}'] = fig
+                    except Exception as e:
+                        self.logger.warning(f"Failed to create distribution plot for {col}: {e}")
+                        continue
+                        
+        except Exception as e:
+            self.logger.warning(f"Visualization generation failed: {e}")
+        
+        return plots

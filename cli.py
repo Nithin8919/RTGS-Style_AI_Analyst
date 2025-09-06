@@ -14,8 +14,8 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 import uuid
 
-# Import our orchestrator
-from src.orchestrator.flow_controller import RTGSOrchestrator
+# Import our LangGraph orchestrator
+from src.orchestrator.agent_router import RTGSOrchestrator
 from src.utils.logging import setup_logging, get_logger
 
 
@@ -102,12 +102,14 @@ class RTGSCLI:
             
         # Update manifest with artifact paths
         artifacts_base = base_dir / "artifacts"
+        data_base = base_dir / "data"
         run_manifest["artifacts_paths"] = {
             "logs_dir": str(artifacts_base / "logs"),
             "reports_dir": str(artifacts_base / "reports"),
             "plots_dir": str(artifacts_base / "plots"),
             "docs_dir": str(artifacts_base / "docs"),
             "quick_start_dir": str(artifacts_base / "quick_start"),
+            "data_dir": str(data_base),
             "run_manifest": str(artifacts_base / "docs" / "run_manifest.json")
         }
 
@@ -190,26 +192,24 @@ class RTGSCLI:
             print(f"📊 Mode: {run_manifest['run_config']['mode']}")
             print(f"📁 Outputs: {run_manifest['run_config']['output_dir']}")
             
-            # Initialize orchestrator
+            # Initialize LangGraph orchestrator with the complete run_manifest
             self.orchestrator = RTGSOrchestrator(run_manifest)
             
-            # Execute pipeline based on mode
+            # Execute pipeline based on mode using LangGraph workflow
             if args.mode == "dry-run":
+                # For dry run, just do ingestion and schema inference
                 result = await self.orchestrator.dry_run()
-                print("\n✅ Dry run completed - no data transformations applied")
+                print("\n✅ Dry run completed - schema inference done")
                 
             elif args.mode == "preview":
                 result = await self.orchestrator.preview_run()
-                print("\n👀 Preview completed - check transforms_preview.csv for proposed changes")
+                print("\n👀 Preview completed - check the results")
                 
                 if not args.auto_approve:
-                    approval = input("\n🤔 Apply these transformations? [y/N]: ").strip().lower()
+                    approval = input("\n🤔 Continue with full analysis? [y/N]: ").strip().lower()
                     if approval not in ['y', 'yes']:
                         print("❌ Pipeline cancelled by user")
                         return run_manifest
-                
-                # Continue with full run if approved
-                result = await self.orchestrator.full_run()
                 
             else:  # full run
                 result = await self.orchestrator.full_run()

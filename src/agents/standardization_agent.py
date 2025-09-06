@@ -23,12 +23,16 @@ warnings.filterwarnings('ignore')
 class StandardizationAgent:
     """Agent responsible for data standardization and column normalization"""
     
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self):
         self.logger = get_agent_logger("standardization")
         
         # Load configuration
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        try:
+            with open("config.yaml", 'r') as f:
+                self.config = yaml.safe_load(f)
+        except FileNotFoundError:
+            self.logger.warning("Config file not found, using defaults")
+            self.config = {}
     
     async def process(self, state) -> Any:
         """Main standardization processing pipeline"""

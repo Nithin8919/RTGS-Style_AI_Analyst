@@ -28,76 +28,168 @@ class TransformationAgent:
         self.feature_config = self.config.get('feature_engineering', {})
         
     async def process(self, state) -> Any:
-        """Main transformation processing pipeline"""
+        """Main transformation processing pipeline with robust error handling"""
         self.logger.info("Starting data transformation process")
         
         try:
             # Initialize transform logger
+            log_dir = Path(state.run_manifest['artifacts_paths']['logs_dir'])
+            log_dir.mkdir(parents=True, exist_ok=True)
+            
             transform_logger = TransformLogger(
-                log_file=Path(state.run_manifest['artifacts_paths']['logs_dir']) / "transform_log.jsonl",
+                log_file=log_dir / "transform_log.jsonl",
                 run_id=state.run_manifest['run_id']
             )
             
-            # Get cleaned data
-            cleaned_data = getattr(state, 'cleaned_data', state.standardized_data)
-            if cleaned_data is None:
-                raise ValueError("No cleaned data available for transformation")
+            # Get data with fallback hierarchy
+            input_data = None
+            data_source = None
+            
+            # Try to get data in order of preference
+            if hasattr(state, 'cleaned_data') and state.cleaned_data is not None:
+                input_data = state.cleaned_data
+                data_source = "cleaned_data"
+                self.logger.info("Using cleaned data for transformation")
+            elif hasattr(state, 'standardized_data') and state.standardized_data is not None:
+                input_data = state.standardized_data
+                data_source = "standardized_data"
+                self.logger.warning("Cleaned data not available, using standardized data")
+            elif hasattr(state, 'raw_data') and state.raw_data is not None:
+                input_data = state.raw_data
+                data_source = "raw_data"
+                self.logger.warning("Neither cleaned nor standardized data available, using raw data")
+            else:
+                raise ValueError("No data available for transformation (checked: cleaned_data, standardized_data, raw_data)")
+            
+            # Validate input data
+            if input_data is None or len(input_data) == 0:
+                raise ValueError(f"Input data from {data_source} is empty or None")
+            
+            self.logger.info(f"Starting transformation with {data_source}: {len(input_data)} rows, {len(input_data.columns)} columns")
             
             # Create working copy
-            transformed_data = cleaned_data.copy()
+            transformed_data = input_data.copy()
             
             # Track transformations
             transformation_log = []
             
-            # Apply transformations
-            self.logger.info("Creating time features...")
-            transformed_data, time_log = await self._create_time_features(transformed_data, transform_logger)
-            transformation_log.extend(time_log)
+            # Apply transformations with individual error handling
+            try:
+                self.logger.info("Creating time features...")
+                transformed_data, time_log = await self._create_time_features(transformed_data, transform_logger)
+                transformation_log.extend(time_log)
+            except Exception as e:
+                self.logger.warning(f"Time features creation failed: {str(e)}")
+                if hasattr(state, 'warnings'):
+                    state.warnings.append(f"Time features creation failed: {str(e)}")
             
-            self.logger.info("Creating per-capita metrics...")
-            transformed_data, per_capita_log = await self._create_per_capita_metrics(transformed_data, transform_logger)
-            transformation_log.extend(per_capita_log)
+            try:
+                self.logger.info("Creating per-capita metrics...")
+                transformed_data, per_capita_log = await self._create_per_capita_metrics(transformed_data, transform_logger)
+                transformation_log.extend(per_capita_log)
+            except Exception as e:
+                self.logger.warning(f"Per-capita metrics creation failed: {str(e)}")
+                if hasattr(state, 'warnings'):
+                    state.warnings.append(f"Per-capita metrics creation failed: {str(e)}")
             
-            self.logger.info("Creating ratio features...")
-            transformed_data, ratio_log = await self._create_ratio_features(transformed_data, transform_logger)
-            transformation_log.extend(ratio_log)
+            try:
+                self.logger.info("Creating ratio features...")
+                transformed_data, ratio_log = await self._create_ratio_features(transformed_data, transform_logger)
+                transformation_log.extend(ratio_log)
+            except Exception as e:
+                self.logger.warning(f"Ratio features creation failed: {str(e)}")
+                if hasattr(state, 'warnings'):
+                    state.warnings.append(f"Ratio features creation failed: {str(e)}")
             
-            self.logger.info("Creating trend features...")
-            transformed_data, trend_log = await self._create_trend_features(transformed_data, transform_logger)
-            transformation_log.extend(trend_log)
+            try:
+                self.logger.info("Creating trend features...")
+                transformed_data, trend_log = await self._create_trend_features(transformed_data, transform_logger)
+                transformation_log.extend(trend_log)
+            except Exception as e:
+                self.logger.warning(f"Trend features creation failed: {str(e)}")
+                if hasattr(state, 'warnings'):
+                    state.warnings.append(f"Trend features creation failed: {str(e)}")
             
-            self.logger.info("Creating aggregation features...")
-            transformed_data, agg_log = await self._create_aggregation_features(transformed_data, transform_logger)
-            transformation_log.extend(agg_log)
+            try:
+                self.logger.info("Creating aggregation features...")
+                transformed_data, agg_log = await self._create_aggregation_features(transformed_data, transform_logger)
+                transformation_log.extend(agg_log)
+            except Exception as e:
+                self.logger.warning(f"Aggregation features creation failed: {str(e)}")
+                if hasattr(state, 'warnings'):
+                    state.warnings.append(f"Aggregation features creation failed: {str(e)}")
             
             # Create feature catalog
-            feature_catalog = await self._create_feature_catalog(transformed_data, cleaned_data, transformation_log)
+            try:
+                feature_catalog = await self._create_feature_catalog(transformed_data, input_data, transformation_log)
+            except Exception as e:
+                self.logger.warning(f"Feature catalog creation failed: {str(e)}")
+                feature_catalog = {
+                    "error": f"Feature catalog creation failed: {str(e)}",
+                    "transformation_operations": len(transformation_log),
+                    "final_shape": transformed_data.shape
+                }
+            
+            # Ensure output directories exist
+            data_dir = Path(state.run_manifest['artifacts_paths']['data_dir']) / "transformed"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            
+            docs_dir = Path(state.run_manifest['artifacts_paths']['docs_dir'])
+            docs_dir.mkdir(parents=True, exist_ok=True)
             
             # Save transformed data
-            output_dir = Path(state.run_manifest['artifacts_paths']['data_dir']) / "transformed"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            
-            output_path = output_dir / f"{state.run_manifest['dataset_info']['dataset_name']}_transformed.csv"
-            transformed_data.to_csv(output_path, index=False)
+            try:
+                output_path = data_dir / f"{state.run_manifest['dataset_info']['dataset_name']}_transformed.csv"
+                transformed_data.to_csv(output_path, index=False)
+                self.logger.info(f"Saved transformed data to {output_path}")
+            except Exception as e:
+                self.logger.error(f"Failed to save transformed data: {str(e)}")
+                raise
             
             # Save feature catalog
-            catalog_path = Path(state.run_manifest['artifacts_paths']['docs_dir']) / "feature_catalog.json"
-            with open(catalog_path, 'w') as f:
-                json.dump(feature_catalog, f, indent=2, default=str)
+            try:
+                catalog_path = docs_dir / "feature_catalog.json"
+                with open(catalog_path, 'w') as f:
+                    json.dump(feature_catalog, f, indent=2, default=str)
+                self.logger.info(f"Saved feature catalog to {catalog_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to save feature catalog: {str(e)}")
             
             # Update state
             state.transformed_data = transformed_data
             state.feature_catalog = feature_catalog
             state.transformation_log = transformation_log
+            state.data_source_used = data_source
             
-            self.logger.info(f"Transformation completed: {len(transformed_data)} rows, {len(transformed_data.columns)} columns")
-            self.logger.info(f"Created {len(transformed_data.columns) - len(cleaned_data.columns)} new features")
+            # Initialize warnings list if it doesn't exist
+            if not hasattr(state, 'warnings'):
+                state.warnings = []
+            
+            success_msg = f"Transformation completed: {len(transformed_data)} rows, {len(transformed_data.columns)} columns"
+            feature_msg = f"Created {len(transformed_data.columns) - len(input_data.columns)} new features"
+            
+            self.logger.info(success_msg)
+            self.logger.info(feature_msg)
             
             return state
             
         except Exception as e:
             self.logger.error(f"Transformation failed: {str(e)}")
+            if not hasattr(state, 'errors'):
+                state.errors = []
             state.errors.append(f"Transformation error: {str(e)}")
+            
+            # Try to preserve input data as transformed data
+            try:
+                if hasattr(state, 'cleaned_data') and state.cleaned_data is not None:
+                    state.transformed_data = state.cleaned_data
+                elif hasattr(state, 'standardized_data') and state.standardized_data is not None:
+                    state.transformed_data = state.standardized_data
+                elif hasattr(state, 'raw_data') and state.raw_data is not None:
+                    state.transformed_data = state.raw_data
+            except:
+                pass
+            
             return state
     
     async def _create_time_features(self, df: pd.DataFrame, transform_logger) -> Tuple[pd.DataFrame, List[Dict]]:

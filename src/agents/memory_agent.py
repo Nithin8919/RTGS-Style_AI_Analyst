@@ -491,7 +491,7 @@ class MemoryAgent:
     
     def _calculate_schema_hash(self, df: pd.DataFrame) -> str:
         """Calculate hash of schema (column names and types)"""
-        if df.empty:
+        if df is None or df.empty:
             return "empty_schema"
         
         schema_info = {
@@ -504,7 +504,7 @@ class MemoryAgent:
     
     def _calculate_sample_hash(self, df: pd.DataFrame) -> str:
         """Calculate hash of sample data content"""
-        if df.empty:
+        if df is None or df.empty:
             return "empty_data"
         
         # Use first 100 rows for hashing

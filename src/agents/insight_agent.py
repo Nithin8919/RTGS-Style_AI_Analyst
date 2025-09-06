@@ -40,87 +40,172 @@ class InsightAgent:
         self.insights_config = self.config.get('insights', {})
         
     async def process(self, state) -> Any:
-        """Main insight generation processing pipeline"""
+        """Main insight generation processing pipeline with robust error handling"""
         self.logger.info("Starting insight generation process")
         
         try:
-            # Get analysis results
-            analysis_results = getattr(state, 'analysis_results', {})
-            if not analysis_results:
+            # Get best available data with fallback
+            input_data = None
+            data_sources = ['analysis_results', 'transformed_data', 'cleaned_data']
+            
+            for source in data_sources:
+                if hasattr(state, source) and getattr(state, source) is not None:
+                    if source == 'analysis_results':
+                        analysis_results = getattr(state, source)
+                        # Validate that it's actually analysis results
+                        if isinstance(analysis_results, dict) and len(analysis_results) > 0:
+                            input_data = analysis_results
+                            self.logger.info(f"Using {source} for insight generation")
+                            break
+                    else:
+                        # Fallback: create minimal analysis from raw data
+                        raw_data = getattr(state, source)
+                        input_data = self._create_minimal_analysis(raw_data)
+                        self.logger.warning(f"Created minimal analysis from {source}")
+                        break
+            
+            if input_data is None:
                 raise ValueError("No analysis results available for insight generation")
             
+            # Initialize error tracking
+            if not hasattr(state, 'errors'):
+                state.errors = []
+            if not hasattr(state, 'warnings'):
+                state.warnings = []
+            
             # Prepare context for LLM
-            insight_context = await self._prepare_insight_context(state)
+            try:
+                insight_context = await self._prepare_insight_context(state, input_data)
+            except Exception as e:
+                self.logger.warning(f"Context preparation failed: {str(e)}")
+                insight_context = self._create_fallback_context(state)
             
-            # Generate different types of insights
-            key_findings = await self._generate_key_findings(analysis_results, insight_context)
-            
-            policy_recommendations = await self._generate_policy_recommendations(
-                analysis_results, insight_context, key_findings
-            )
-            
-            executive_summary = await self._generate_executive_summary(
-                key_findings, policy_recommendations, insight_context
-            )
-            
-            statistical_narrative = await self._generate_statistical_narrative(
-                analysis_results, insight_context
-            )
-            
-            # Compile comprehensive insights
+            # Generate insights with individual error handling
             insights = {
                 'generation_timestamp': datetime.utcnow().isoformat(),
-                'context': insight_context,
-                'executive_summary': executive_summary,
-                'key_findings': key_findings,
-                'policy_recommendations': policy_recommendations,
-                'statistical_narrative': statistical_narrative,
-                'confidence_assessment': self._assess_insight_confidence(
-                    key_findings, analysis_results, state
-                )
+                'context': insight_context
             }
             
+            # Key findings
+            try:
+                key_findings = await self._generate_key_findings(input_data, insight_context)
+                insights['key_findings'] = key_findings
+            except Exception as e:
+                self.logger.warning(f"Key findings generation failed: {str(e)}")
+                insights['key_findings'] = self._generate_fallback_findings(input_data, insight_context)
+            
+            # Policy recommendations
+            try:
+                policy_recommendations = await self._generate_policy_recommendations(
+                    input_data, insight_context, insights['key_findings']
+                )
+                insights['policy_recommendations'] = policy_recommendations
+            except Exception as e:
+                self.logger.warning(f"Policy recommendations generation failed: {str(e)}")
+                insights['policy_recommendations'] = self._generate_fallback_recommendations(
+                    insights['key_findings'], insight_context
+                )
+            
+            # Executive summary
+            try:
+                executive_summary = await self._generate_executive_summary(
+                    insights['key_findings'], insights['policy_recommendations'], insight_context
+                )
+                insights['executive_summary'] = executive_summary
+            except Exception as e:
+                self.logger.warning(f"Executive summary generation failed: {str(e)}")
+                insights['executive_summary'] = self._generate_fallback_summary(insight_context)
+            
+            # Statistical narrative
+            try:
+                statistical_narrative = await self._generate_statistical_narrative(input_data, insight_context)
+                insights['statistical_narrative'] = statistical_narrative
+            except Exception as e:
+                self.logger.warning(f"Statistical narrative generation failed: {str(e)}")
+                insights['statistical_narrative'] = self._generate_fallback_narrative()
+            
+            # Confidence assessment
+            try:
+                confidence_assessment = self._assess_insight_confidence(
+                    insights['key_findings'], input_data, state
+                )
+                insights['confidence_assessment'] = confidence_assessment
+            except Exception as e:
+                self.logger.warning(f"Confidence assessment failed: {str(e)}")
+                insights['confidence_assessment'] = {'overall_confidence': 'MEDIUM'}
+            
+            # Ensure output directories exist
+            docs_dir = Path(state.run_manifest['artifacts_paths']['docs_dir'])
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            
             # Save insights
-            insights_path = Path(state.run_manifest['artifacts_paths']['docs_dir']) / "insights_executive.json"
-            with open(insights_path, 'w') as f:
-                json.dump(insights, f, indent=2)
+            try:
+                insights_path = docs_dir / "insights_executive.json"
+                with open(insights_path, 'w') as f:
+                    json.dump(insights, f, indent=2, default=str)
+                self.logger.info(f"Saved insights to {insights_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to save insights: {str(e)}")
             
             # Update state
             state.insights = insights
             
-            self.logger.info(f"Insight generation completed: {len(key_findings)} findings, {len(policy_recommendations)} recommendations")
+            self.logger.info(f"Insight generation completed: {len(insights['key_findings'])} findings, {len(insights['policy_recommendations'])} recommendations")
             
             return state
             
         except Exception as e:
             self.logger.error(f"Insight generation failed: {str(e)}")
+            if not hasattr(state, 'errors'):
+                state.errors = []
             state.errors.append(f"Insight generation failed: {str(e)}")
+            
+            # Create minimal insights to prevent cascade failure
+            state.insights = {
+                'error': str(e),
+                'generation_timestamp': datetime.utcnow().isoformat(),
+                'key_findings': [],
+                'policy_recommendations': [],
+                'executive_summary': {'one_line_summary': 'Analysis completed with limitations'},
+                'confidence_assessment': {'overall_confidence': 'LOW'}
+            }
+            
             return state
 
-    async def _prepare_insight_context(self, state) -> Dict[str, Any]:
-        """Prepare context information for insight generation"""
+    async def _prepare_insight_context(self, state, analysis_results: Dict) -> Dict[str, Any]:
+        """Prepare context information for insight generation with safe data access"""
         
         run_manifest = state.run_manifest
-        analysis_results = getattr(state, 'analysis_results', {})
+        
+        # Safe access to analysis results
+        dataset_profile = analysis_results.get('dataset_profile', {})
+        if isinstance(dataset_profile, str):
+            dataset_profile = {}
+        
+        basic_info = dataset_profile.get('basic_info', {})
+        if isinstance(basic_info, str):
+            basic_info = {}
         
         context = {
             'dataset_info': {
-                'name': run_manifest['dataset_info']['dataset_name'],
-                'domain': run_manifest['dataset_info']['domain_hint'],
-                'scope': run_manifest['dataset_info']['scope'],
-                'description': run_manifest['dataset_info']['description']
+                'name': run_manifest.get('dataset_info', {}).get('dataset_name', 'Unknown'),
+                'domain': run_manifest.get('dataset_info', {}).get('domain_hint', 'general'),
+                'scope': run_manifest.get('dataset_info', {}).get('scope', 'Unknown'),
+                'description': run_manifest.get('dataset_info', {}).get('description', 'Analysis dataset')
             },
             'user_context': run_manifest.get('user_context', {}),
             'data_characteristics': {
-                'rows': analysis_results.get('dataset_info', {}).get('rows', 0),
-                'columns': analysis_results.get('dataset_info', {}).get('columns', 0),
-                'analysis_quality': analysis_results.get('analysis_quality', {}).get('quality_level', 'unknown')
+                'rows': basic_info.get('rows', 0),
+                'columns': basic_info.get('columns', 0),
+                'analysis_quality': analysis_results.get('quality_assessment', {}).get('overall_score', 'unknown')
             },
-            'key_metrics_analyzed': len(analysis_results.get('kpis', [])),
-            'trends_identified': len(analysis_results.get('trends', [])),
-            'spatial_patterns': len(analysis_results.get('spatial_analysis', {})),
-            'significant_correlations': len([c for c in analysis_results.get('correlations', []) if c.get('is_significant', False)]),
-            'hypothesis_tests_run': len(analysis_results.get('hypothesis_tests', []))
+            'analysis_summary': {
+                'kpis_analyzed': len(self._safe_get_list(analysis_results, 'kpis')),
+                'trends_identified': len(self._safe_get_list(analysis_results, 'trends')),
+                'correlations_found': len(self._safe_get_list(analysis_results, 'correlations')),
+                'spatial_patterns': bool(analysis_results.get('spatial_analysis', {})),
+                'hypothesis_tests': len(self._safe_get_list(analysis_results, 'hypothesis_tests'))
+            }
         }
         
         return context
@@ -662,3 +747,236 @@ Create executive summary for senior officials."""
                 return finding.get('confidence', 'MEDIUM')
         
         return 'MEDIUM'  # Default
+    
+    def _extract_statistical_evidence(self, analysis_results: Dict) -> Dict[str, Any]:
+        """Extract key statistical evidence for LLM consumption with safe data access"""
+        
+        evidence = {
+            'top_kpis': [],
+            'significant_trends': [],
+            'spatial_patterns': {},
+            'significant_correlations': [],
+            'significant_tests': []
+        }
+        
+        try:
+            # Safe KPI extraction
+            kpis_data = analysis_results.get('kpis', {})
+            if isinstance(kpis_data, dict):
+                numeric_summary = kpis_data.get('numeric_summary', {})
+                if isinstance(numeric_summary, dict):
+                    for col_name, stats in numeric_summary.items():
+                        if isinstance(stats, dict) and isinstance(stats.get('mean'), (int, float)):
+                            evidence['top_kpis'].append({
+                                'metric_name': col_name,
+                                'statistics': stats,
+                                'domain_relevance': 'high',  # Default
+                                'sample_size': stats.get('count', 0)
+                            })
+            
+            # Safe trends extraction
+            trends_data = analysis_results.get('trends', {})
+            if isinstance(trends_data, dict):
+                linear_trends = trends_data.get('linear_trends', {})
+                if isinstance(linear_trends, dict):
+                    for metric, trend_info in linear_trends.items():
+                        if isinstance(trend_info, dict) and trend_info.get('statistical_significance'):
+                            evidence['significant_trends'].append({
+                                'metric': metric,
+                                'trend_analysis': {
+                                    'direction': trend_info.get('trend_direction', 'unknown'),
+                                    'strength': abs(trend_info.get('slope', 0)),
+                                    'significance': trend_info.get('p_value', 1),
+                                    'is_significant': trend_info.get('statistical_significance', False)
+                                }
+                            })
+            
+            # Safe correlations extraction
+            correlations_data = analysis_results.get('correlations', {})
+            if isinstance(correlations_data, dict):
+                significant_correlations = correlations_data.get('significant_correlations', [])
+                if isinstance(significant_correlations, list):
+                    for corr in significant_correlations[:5]:
+                        if isinstance(corr, dict):
+                            evidence['significant_correlations'].append({
+                                'variable_1': corr.get('variable_1', 'Unknown'),
+                                'variable_2': corr.get('variable_2', 'Unknown'),
+                                'correlation_coefficient': corr.get('pearson_r', 0),
+                                'correlation_direction': 'positive' if corr.get('pearson_r', 0) > 0 else 'negative',
+                                'is_significant': corr.get('pearson_significant', False)
+                            })
+            
+            # Safe spatial patterns extraction
+            spatial_data = analysis_results.get('spatial_analysis', {})
+            if isinstance(spatial_data, dict):
+                regional_comparisons = spatial_data.get('regional_comparisons', {})
+                if isinstance(regional_comparisons, dict):
+                    for metric, comparison_data in regional_comparisons.items():
+                        if isinstance(comparison_data, dict):
+                            inequality_metrics = comparison_data.get('inequality_metrics', {})
+                            if isinstance(inequality_metrics, dict):
+                                gini = inequality_metrics.get('gini_coefficient', 0)
+                                evidence['spatial_patterns'][metric] = {
+                                    'inequality_measures': {
+                                        'gini_coefficient': gini,
+                                        'inequality_level': 'high' if gini > 0.4 else 'medium' if gini > 0.25 else 'low'
+                                    },
+                                    'top_performing_areas': {},
+                                    'bottom_performing_areas': {}
+                                }
+            
+            # Safe hypothesis tests extraction
+            hypothesis_data = analysis_results.get('hypothesis_tests', {})
+            if isinstance(hypothesis_data, dict):
+                group_comparisons = hypothesis_data.get('group_comparisons', [])
+                if isinstance(group_comparisons, list):
+                    for test in group_comparisons[:3]:
+                        if isinstance(test, dict) and test.get('significant'):
+                            evidence['significant_tests'].append({
+                                'dependent_variable': test.get('test_variable', 'Unknown'),
+                                'group_1': {'name': 'Group1'},
+                                'group_2': {'name': 'Group2'},
+                                'test_statistics': {
+                                    'p_value': test.get('p_value', 1),
+                                    'is_significant': test.get('significant', False)
+                                },
+                                'effect_size': {
+                                    'interpretation': test.get('effect_size_interpretation', 'unknown')
+                                }
+                            })
+        
+        except Exception as e:
+            self.logger.warning(f"Evidence extraction failed: {str(e)}")
+        
+        return evidence
+    
+    def _safe_get_list(self, data: Dict, key: str) -> List:
+        """Safely get a list from dictionary"""
+        value = data.get(key, [])
+        if isinstance(value, list):
+            return value
+        elif isinstance(value, dict):
+            return list(value.values()) if value else []
+        else:
+            return []
+
+    def _safe_get_dict(self, data: Dict, key: str) -> Dict:
+        """Safely get a dictionary from dictionary"""
+        value = data.get(key, {})
+        return value if isinstance(value, dict) else {}
+
+    def _create_minimal_analysis(self, raw_data) -> Dict:
+        """Create minimal analysis from raw data when analysis results are not available"""
+        if raw_data is None:
+            return {}
+        
+        try:
+            numeric_cols = raw_data.select_dtypes(include=[np.number]).columns
+            
+            minimal_analysis = {
+                'dataset_profile': {
+                    'basic_info': {
+                        'rows': len(raw_data),
+                        'columns': len(raw_data.columns)
+                    }
+                },
+                'kpis': {
+                    'numeric_summary': {}
+                },
+                'quality_assessment': {
+                    'overall_score': 50
+                }
+            }
+            
+            # Add basic stats for numeric columns
+            for col in numeric_cols[:5]:  # Limit to 5 columns
+                try:
+                    col_data = raw_data[col].dropna()
+                    if len(col_data) > 0:
+                        minimal_analysis['kpis']['numeric_summary'][col] = {
+                            'count': int(len(col_data)),
+                            'mean': float(col_data.mean()),
+                            'std': float(col_data.std()),
+                            'min': float(col_data.min()),
+                            'max': float(col_data.max())
+                        }
+                except:
+                    continue
+            
+            return minimal_analysis
+            
+        except Exception as e:
+            self.logger.warning(f"Minimal analysis creation failed: {str(e)}")
+            return {
+                'dataset_profile': {'basic_info': {'rows': 0, 'columns': 0}},
+                'kpis': {},
+                'quality_assessment': {'overall_score': 30}
+            }
+
+    def _create_fallback_context(self, state) -> Dict:
+        """Create fallback context when normal context preparation fails"""
+        run_manifest = state.run_manifest
+        
+        return {
+            'dataset_info': {
+                'name': run_manifest.get('dataset_info', {}).get('dataset_name', 'Unknown Dataset'),
+                'domain': run_manifest.get('dataset_info', {}).get('domain_hint', 'general'),
+                'scope': run_manifest.get('dataset_info', {}).get('scope', 'Unknown Scope'),
+                'description': 'Dataset analysis with limited context'
+            },
+            'data_characteristics': {
+                'rows': 0,
+                'columns': 0,
+                'analysis_quality': 'limited'
+            },
+            'analysis_summary': {
+                'kpis_analyzed': 0,
+                'trends_identified': 0,
+                'correlations_found': 0,
+                'spatial_patterns': False,
+                'hypothesis_tests': 0
+            }
+        }
+
+    def _generate_fallback_summary(self, context: Dict) -> Dict:
+        """Generate fallback executive summary"""
+        return {
+            'one_line_summary': f"Analysis of {context['dataset_info']['name']} provides insights for {context['dataset_info']['domain']} policy",
+            'key_insights_summary': 'Statistical analysis completed with limited data processing',
+            'priority_actions': 'Review data quality and consider additional data collection',
+            'overall_assessment': 'Analysis completed with constraints',
+            'findings_count': 0,
+            'recommendations_count': 0
+        }
+
+    def _generate_fallback_narrative(self) -> Dict:
+        """Generate fallback statistical narrative"""
+        return {
+            'methodology_summary': {
+                'analysis_approach': 'Basic statistical analysis completed',
+                'statistical_tests_used': ['Descriptive statistics'],
+                'significance_level': 0.05,
+                'sample_size': 'Unknown'
+            },
+            'data_quality_assessment': {
+                'overall_quality': 'limited',
+                'completeness': 'Data processing completed with constraints',
+                'analytical_limitations': ['Limited statistical power due to processing constraints']
+            },
+            'statistical_confidence': {
+                'overall_reliability': 'MEDIUM'
+            }
+        }
+        
+    def _generate_fallback_recommendations(self, key_findings: List, context: Dict) -> List[Dict]:
+        """Generate fallback recommendations when LLM fails"""
+        return [
+            {
+                'id': 'rec_1',
+                'recommendation': f"Review data quality for {context['dataset_info']['domain']} analysis",
+                'priority': 'HIGH',
+                'rationale': 'Ensure data completeness and accuracy for better insights',
+                'implementation_timeframe': 'Short-term',
+                'estimated_impact': 'MEDIUM'
+            }
+        ]

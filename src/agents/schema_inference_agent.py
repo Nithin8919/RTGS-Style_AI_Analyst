@@ -134,6 +134,10 @@ class SchemaInferenceAgent:
         domain_hint = getattr(self, 'domain_hint', 'unknown')
         
         for col, type_info in type_results.items():
+            # Rename 'type' to 'suggested_type' for consistency
+            if 'type' in type_info and 'suggested_type' not in type_info:
+                type_info['suggested_type'] = type_info['type']
+            
             # Add domain-specific hints
             type_info = self._add_domain_specific_hints(col, type_info, domain_hint)
             type_results[col] = type_info

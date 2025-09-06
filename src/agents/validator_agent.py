@@ -27,6 +27,41 @@ class ValidatorAgent:
         # Load validation gates
         self.validation_gates = self.config.get('validation_gates', {})
         
+    def json_safe_converter(self, obj):
+        """Convert numpy types to native Python types for JSON serialization"""
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif pd.isna(obj):
+            return None
+        return str(obj)
+    
+    def deep_convert_numpy_types(self, obj):
+        """Recursively convert numpy types in nested data structures"""
+        if isinstance(obj, dict):
+            return {key: self.deep_convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self.deep_convert_numpy_types(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return tuple(self.deep_convert_numpy_types(item) for item in obj)
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif pd.isna(obj):
+            return None
+        else:
+            return obj
+        
     async def process(self, state) -> Any:
         """Main validation processing pipeline"""
         self.logger.info("Starting data validation process")
@@ -70,10 +105,11 @@ class ValidatorAgent:
                     remediation=result.get('remediation')
                 )
             
-            # Save validation report
+            # Save validation report - convert numpy types first
             report_path = Path(state.run_manifest['artifacts_paths']['docs_dir']) / "run_validation_report.json"
+            safe_validation_report = self.deep_convert_numpy_types(validation_report)
             with open(report_path, 'w') as f:
-                json.dump(validation_report, f, indent=2)
+                json.dump(safe_validation_report, f, indent=2)
             
             # Update state
             state.validation_results = validation_results
@@ -149,7 +185,7 @@ class ValidatorAgent:
             if gate_name == 'sufficient_data':
                 # Check if dataset has minimum required rows
                 actual_rows = len(df)
-                passed = actual_rows >= threshold
+                passed = bool(actual_rows >= threshold)
                 
                 return {
                     'passed': passed,
@@ -167,7 +203,7 @@ class ValidatorAgent:
                 total_columns = len(df.columns)
                 data_presence_rate = columns_with_data / total_columns if total_columns > 0 else 0
                 
-                passed = data_presence_rate >= threshold
+                passed = bool(data_presence_rate >= threshold)
                 
                 return {
                     'passed': passed,
@@ -190,7 +226,7 @@ class ValidatorAgent:
                             'missing_fraction': null_fraction
                         })
                 
-                passed = len(high_missing_columns) == 0
+                passed = bool(len(high_missing_columns) == 0)
                 
                 return {
                     'passed': passed,
@@ -208,7 +244,7 @@ class ValidatorAgent:
                 duplicate_count = df.duplicated().sum()
                 duplicate_rate = duplicate_count / len(df) if len(df) > 0 else 0
                 
-                passed = duplicate_rate <= threshold
+                passed = bool(duplicate_rate <= threshold)
                 
                 return {
                     'passed': passed,

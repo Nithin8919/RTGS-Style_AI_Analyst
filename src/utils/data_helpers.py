@@ -509,44 +509,57 @@ def detect_outliers_iqr(series: pd.Series, multiplier: float = 1.5) -> pd.Series
         logger.error(f"Outlier detection failed: {e}")
         return pd.Series([False] * len(series), index=series.index)
 
-def safe_type_conversion(series: pd.Series, target_type: str) -> pd.Series:
-    """Safely convert series to target type with error handling"""
-    try:
-        if target_type == 'numeric':
-            return pd.to_numeric(series, errors='coerce')
+def safe_type_conversion(df: pd.DataFrame, type_mapping: Dict[str, str]) -> Tuple[pd.DataFrame, List[str]]:
+    """Safely convert DataFrame columns to target types with error handling"""
+    df_converted = df.copy()
+    conversion_errors = []
+    
+    for column, target_type in type_mapping.items():
+        if column not in df_converted.columns:
+            conversion_errors.append(f"Column {column} not found in DataFrame")
+            continue
             
-        elif target_type == 'integer':
-            numeric = pd.to_numeric(series, errors='coerce')
-            return numeric.astype('Int64')  # Nullable integer type
+        try:
+            series = df_converted[column]
             
-        elif target_type == 'float':
-            return pd.to_numeric(series, errors='coerce').astype(float)
-            
-        elif target_type == 'datetime':
-            return pd.to_datetime(series, errors='coerce')
-            
-        elif target_type == 'boolean':
-            # Handle various boolean representations
-            bool_map = {
-                'true': True, 'false': False,
-                '1': True, '0': False,
-                'yes': True, 'no': False,
-                'y': True, 'n': False,
-                't': True, 'f': False,
-                '1.0': True, '0.0': False
-            }
-            
-            return series.astype(str).str.lower().str.strip().map(bool_map)
-            
-        elif target_type == 'categorical':
-            return series.astype('category')
-            
-        else:  # Default to string
-            return series.astype(str)
-            
-    except Exception as e:
-        logger.warning(f"Type conversion to {target_type} failed: {e}")
-        return series  # Return original series if conversion fails
+            if target_type == 'numeric':
+                df_converted[column] = pd.to_numeric(series, errors='coerce')
+                
+            elif target_type == 'integer':
+                numeric = pd.to_numeric(series, errors='coerce')
+                df_converted[column] = numeric.astype('Int64')  # Nullable integer type
+                
+            elif target_type == 'float':
+                df_converted[column] = pd.to_numeric(series, errors='coerce').astype(float)
+                
+            elif target_type == 'datetime':
+                df_converted[column] = pd.to_datetime(series, errors='coerce')
+                
+            elif target_type == 'boolean':
+                # Handle various boolean representations
+                bool_map = {
+                    'true': True, 'false': False,
+                    '1': True, '0': False,
+                    'yes': True, 'no': False,
+                    'y': True, 'n': False,
+                    't': True, 'f': False,
+                    '1.0': True, '0.0': False
+                }
+                
+                df_converted[column] = series.astype(str).str.lower().str.strip().map(bool_map)
+                
+            elif target_type == 'categorical':
+                df_converted[column] = series.astype('category')
+                
+            else:  # Default to string
+                df_converted[column] = series.astype(str)
+                
+        except Exception as e:
+            error_msg = f"Failed to convert column {column} to {target_type}: {str(e)}"
+            conversion_errors.append(error_msg)
+            logger.warning(error_msg)
+    
+    return df_converted, conversion_errors
 
 def load_dataset_robust(file_path: str, **kwargs) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """

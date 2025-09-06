@@ -20,6 +20,19 @@ from src.utils.data_helpers import detect_outliers_iqr
 warnings.filterwarnings('ignore')
 
 
+def json_safe_converter(obj):
+    """Convert numpy types to native Python types for JSON serialization"""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif pd.isna(obj):
+        return None
+    return str(obj)
+
+
 class CleaningAgent:
     """Agent responsible for data cleaning and quality validation"""
     
@@ -91,10 +104,10 @@ class CleaningAgent:
             cleaned_path = Path(state.run_manifest['run_config']['output_dir']) / "data" / "cleaned" / f"{state.run_manifest['dataset_info']['dataset_name']}_cleaned.csv"
             cleaned_data.to_csv(cleaned_path, index=False)
             
-            # Save cleaning summary
+            # Save cleaning summary (with JSON-safe conversion)
             summary_path = Path(state.run_manifest['artifacts_paths']['docs_dir']) / "cleaning_summary.json"
             with open(summary_path, 'w') as f:
-                json.dump(cleaning_summary, f, indent=2)
+                json.dump(cleaning_summary, f, indent=2, default=json_safe_converter)
             
             # Save transforms preview
             preview_path = Path(state.run_manifest['artifacts_paths']['docs_dir']) / "transforms_preview.csv"
@@ -150,7 +163,7 @@ class CleaningAgent:
                     rows_affected=len(df),
                     rule_id="drop_high_missing_col_v1",
                     rationale=operation['rationale'],
-                    parameters={'null_fraction': null_fraction, 'threshold': self.thresholds['drop_column_threshold']},
+                    parameters={'null_fraction': float(null_fraction), 'threshold': float(self.thresholds['drop_column_threshold'])},
                     confidence="high"
                 )
                 
@@ -173,10 +186,10 @@ class CleaningAgent:
                         agent="cleaning",
                         action="median_impute",
                         column=col,
-                        rows_affected=null_count,
+                        rows_affected=int(null_count),
                         rule_id="median_impute_v1",
                         rationale=operation['rationale'],
-                        parameters={'impute_value': median_value, 'null_fraction': null_fraction},
+                        parameters={'impute_value': float(median_value), 'null_fraction': float(null_fraction)},
                         confidence="high",
                         preview_before="NaN",
                         preview_after=str(median_value)
@@ -340,10 +353,10 @@ class CleaningAgent:
             transform_logger.log_transform(
                 agent="cleaning",
                 action="remove_exact_duplicates",
-                rows_affected=exact_dupes_removed,
+                rows_affected=int(exact_dupes_removed),
                 rule_id="remove_duplicates_v1",
                 rationale=f"Removed {exact_dupes_removed} exact duplicate rows",
-                parameters={'duplicates_removed': exact_dupes_removed},
+                parameters={'duplicates_removed': int(exact_dupes_removed)},
                 confidence="high"
             )
             
@@ -373,79 +386,101 @@ class CleaningAgent:
             if df[col].isnull().all():
                 continue
             
-            # Detect outliers using IQR method
-            outliers_mask, outlier_stats = detect_outliers_iqr(
-                df[col], 
-                multiplier=self.thresholds['outlier_iqr_multiplier']
-            )
-            
-            outlier_count = outliers_mask.sum() if isinstance(outliers_mask, pd.Series) else 0
-            outlier_percentage = (outlier_count / len(df)) * 100
-            
-            if outlier_count > 0:
-                # Decision: flag vs remove based on percentage and domain knowledge
-                if outlier_percentage > self.thresholds['max_auto_drop_rows_percent'] * 100:
-                    # Too many outliers - just flag them
-                    df_outliers_handled[f'{col}_outlier_flag'] = outliers_mask
-                    
-                    transform_logger.log_transform(
-                        agent="cleaning",
-                        action="flag_outliers",
-                        column=col,
-                        rows_affected=outlier_count,
-                        rule_id="flag_outliers_v1",
-                        rationale=f"Flagged {outlier_count} outliers ({outlier_percentage:.1f}%) - too many to auto-remove",
-                        parameters={
+            try:
+                # Safe outlier detection using IQR method
+                Q1 = df[col].quantile(0.25)
+                Q3 = df[col].quantile(0.75)
+                IQR = Q3 - Q1
+                
+                multiplier = self.thresholds['outlier_iqr_multiplier']
+                lower_bound = Q1 - multiplier * IQR
+                upper_bound = Q3 + multiplier * IQR
+                
+                # Create outliers mask
+                outliers_mask = (df[col] < lower_bound) | (df[col] > upper_bound)
+                outlier_count = outliers_mask.sum()
+                outlier_percentage = (outlier_count / len(df)) * 100
+                
+                # Outlier stats for logging
+                outlier_stats = {
+                    'q1': float(Q1),
+                    'q3': float(Q3),
+                    'iqr': float(IQR),
+                    'lower_bound': float(lower_bound),
+                    'upper_bound': float(upper_bound),
+                    'outlier_count': int(outlier_count),
+                    'outlier_percentage': float(outlier_percentage)
+                }
+                
+                if outlier_count > 0:
+                    # Decision: flag vs remove based on percentage and domain knowledge
+                    if outlier_percentage > self.thresholds['max_auto_drop_rows_percent'] * 100:
+                        # Too many outliers - just flag them
+                        df_outliers_handled[f'{col}_outlier_flag'] = outliers_mask
+                        
+                        transform_logger.log_transform(
+                            agent="cleaning",
+                            action="flag_outliers",
+                            column=col,
+                            rows_affected=int(outlier_count),
+                            rule_id="flag_outliers_v1",
+                            rationale=f"Flagged {outlier_count} outliers ({outlier_percentage:.1f}%) - too many to auto-remove",
+                            parameters={
+                                'outlier_count': int(outlier_count),
+                                'outlier_percentage': float(outlier_percentage),
+                                'iqr_multiplier': float(self.thresholds['outlier_iqr_multiplier']),
+                                **outlier_stats
+                            },
+                            confidence="medium"
+                        )
+                        
+                        outlier_operations.append({
+                            'action': 'flag_outliers',
+                            'column': col,
                             'outlier_count': int(outlier_count),
                             'outlier_percentage': outlier_percentage,
-                            'iqr_multiplier': self.thresholds['outlier_iqr_multiplier'],
-                            **outlier_stats
-                        },
-                        confidence="medium"
-                    )
-                    
-                    outlier_operations.append({
-                        'action': 'flag_outliers',
-                        'column': col,
-                        'outlier_count': int(outlier_count),
-                        'outlier_percentage': outlier_percentage,
-                        'outlier_bounds': {
-                            'lower': outlier_stats['lower_bound'],
-                            'upper': outlier_stats['upper_bound']
-                        },
-                        'rationale': f'Flagged {outlier_count} outliers for review'
-                    })
-                else:
-                    # Remove outliers if count is reasonable
-                    df_outliers_handled = df_outliers_handled[~outliers_mask]
-                    
-                    transform_logger.log_transform(
-                        agent="cleaning",
-                        action="remove_outliers",
-                        column=col,
-                        rows_affected=outlier_count,
-                        rule_id="remove_outliers_v1", 
-                        rationale=f"Removed {outlier_count} outliers ({outlier_percentage:.1f}%)",
-                        parameters={
+                            'outlier_bounds': {
+                                'lower': lower_bound,
+                                'upper': upper_bound
+                            },
+                            'rationale': f'Flagged {outlier_count} outliers for review'
+                        })
+                    else:
+                        # Remove outliers if count is reasonable
+                        df_outliers_handled = df_outliers_handled[~outliers_mask]
+                        
+                        transform_logger.log_transform(
+                            agent="cleaning",
+                            action="remove_outliers",
+                            column=col,
+                            rows_affected=int(outlier_count),
+                            rule_id="remove_outliers_v1", 
+                            rationale=f"Removed {outlier_count} outliers ({outlier_percentage:.1f}%)",
+                            parameters={
+                                'outlier_count': int(outlier_count),
+                                'outlier_percentage': float(outlier_percentage),
+                                'iqr_multiplier': float(self.thresholds['outlier_iqr_multiplier']),
+                                **outlier_stats
+                            },
+                            confidence="medium"
+                        )
+                        
+                        outlier_operations.append({
+                            'action': 'remove_outliers',
+                            'column': col,
                             'outlier_count': int(outlier_count),
                             'outlier_percentage': outlier_percentage,
-                            'iqr_multiplier': self.thresholds['outlier_iqr_multiplier'],
-                            **outlier_stats
-                        },
-                        confidence="medium"
-                    )
-                    
-                    outlier_operations.append({
-                        'action': 'remove_outliers',
-                        'column': col,
-                        'outlier_count': int(outlier_count),
-                        'outlier_percentage': outlier_percentage,
-                        'outlier_bounds': {
-                            'lower': outlier_stats['lower_bound'],
-                            'upper': outlier_stats['upper_bound']
-                        },
-                        'rationale': f'Removed {outlier_count} outlier rows'
-                    })
+                            'outlier_bounds': {
+                                'lower': lower_bound,
+                                'upper': upper_bound
+                            },
+                            'rationale': f'Removed {outlier_count} outlier rows'
+                        })
+                        
+            except Exception as e:
+                self.logger.warning(f"Failed to process outliers for column {col}: {str(e)}")
+                # Continue processing other columns
+                continue
         
         self.logger.info(f"Outlier handling completed: processed {len(outlier_operations)} columns")
         

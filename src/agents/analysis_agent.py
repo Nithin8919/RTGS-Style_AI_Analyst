@@ -1,13 +1,15 @@
 """
 RTGS AI Analyst - Analysis Agent (Complete Implementation)
-Performs statistical analysis, KPI calculation, and hypothesis testing
+Performs statistical analysis, KPI calculation, trend analysis, and hypothesis testing
 """
 
 import pandas as pd
 import numpy as np
 from scipy import stats
-from scipy.stats import pearsonr, spearmanr, normaltest, levene, ttest_ind, mannwhitneyu
-from typing import Dict, Any, List, Optional, Tuple
+from scipy.stats import pearsonr, spearmanr, ttest_ind, mannwhitneyu, chi2_contingency, normaltest
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mutual_info_score
+from typing import Dict, Any, List, Tuple, Optional
 import json
 import yaml
 from pathlib import Path
@@ -18,7 +20,6 @@ from src.utils.logging import get_agent_logger
 
 warnings.filterwarnings('ignore')
 
-
 class AnalysisAgent:
     """Agent responsible for statistical analysis and KPI computation"""
     
@@ -26,692 +27,1330 @@ class AnalysisAgent:
         self.logger = get_agent_logger("analysis")
         
         # Load configuration
-        try:
-            with open(config_path, 'r') as f:
-                self.config = yaml.safe_load(f)
-        except FileNotFoundError:
-            self.logger.warning(f"Config file {config_path} not found, using defaults")
-            self.config = {}
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
         
-        # Extract statistical parameters
-        self.stats_config = self.config.get('statistics', {})
-        self.significance_alpha = self.stats_config.get('significance_alpha', 0.05)
-        self.correlation_threshold = self.stats_config.get('correlation_threshold', 0.6)
-        self.min_sample_size = self.stats_config.get('min_sample_size', 30)
+        # Analysis configuration
+        self.analysis_config = self.config.get('analysis', {})
+        self.significance_level = self.config.get('data_quality', {}).get('SIGNIFICANCE_ALPHA', 0.05)
         
     async def process(self, state) -> Any:
-        """Main analysis processing pipeline"""
-        self.logger.info("Starting statistical analysis process")
+        """Main analysis processing pipeline with robust error handling"""
+        self.logger.info("Starting statistical analysis")
         
         try:
-            # Get transformed data
-            transformed_data = getattr(state, 'transformed_data', state.cleaned_data)
-            if transformed_data is None:
-                raise ValueError("No transformed data available for analysis")
+            # Get best available data with fallback
+            input_data = None
+            data_sources = ['transformed_data', 'cleaned_data', 'standardized_data', 'raw_data']
             
-            # Initialize analysis results container
+            for source in data_sources:
+                if hasattr(state, source) and getattr(state, source) is not None:
+                    input_data = getattr(state, source)
+                    self.logger.info(f"Using {source} for analysis")
+                    break
+            
+            if input_data is None or len(input_data) == 0:
+                raise ValueError("No data available for analysis")
+            
+            # Initialize error tracking
+            if not hasattr(state, 'errors'):
+                state.errors = []
+            if not hasattr(state, 'warnings'):
+                state.warnings = []
+            
+            self.logger.info(f"Analyzing dataset: {len(input_data)} rows × {len(input_data.columns)} columns")
+            
+            # Perform analysis with individual error handling
             analysis_results = {
-                'analysis_timestamp': datetime.utcnow().isoformat(),
-                'dataset_info': {
-                    'rows': len(transformed_data),
-                    'columns': len(transformed_data.columns),
-                    'domain': state.run_manifest['dataset_info']['domain_hint']
+                'analysis_metadata': {
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'dataset_shape': list(input_data.shape),
+                    'analysis_version': '1.0',
+                    'significance_level': self.significance_level
                 }
             }
             
-            # Perform different types of analysis
-            kpi_results = await self._calculate_kpis(transformed_data, state)
-            analysis_results['kpis'] = kpi_results
+            # Dataset profile
+            try:
+                dataset_profile = await self._create_dataset_profile(input_data)
+                analysis_results['dataset_profile'] = dataset_profile
+            except Exception as e:
+                self.logger.warning(f"Dataset profile creation failed: {str(e)}")
+                analysis_results['dataset_profile'] = {'error': str(e)}
             
-            trend_results = await self._analyze_trends(transformed_data, state)
-            analysis_results['trends'] = trend_results
+            # KPI computation
+            try:
+                kpi_results = await self._compute_kpis(input_data)
+                analysis_results['kpis'] = kpi_results
+            except Exception as e:
+                self.logger.warning(f"KPI computation failed: {str(e)}")
+                analysis_results['kpis'] = {'error': str(e)}
             
-            spatial_results = await self._analyze_spatial_patterns(transformed_data, state)
-            analysis_results['spatial_analysis'] = spatial_results
+            # Trend analysis
+            try:
+                trend_analysis = await self._analyze_trends(input_data)
+                analysis_results['trends'] = trend_analysis
+            except Exception as e:
+                self.logger.warning(f"Trend analysis failed: {str(e)}")
+                analysis_results['trends'] = {'error': str(e)}
             
-            correlation_results = await self._analyze_correlations(transformed_data)
-            analysis_results['correlations'] = correlation_results
+            # Correlation analysis
+            try:
+                correlation_analysis = await self._analyze_correlations(input_data)
+                analysis_results['correlations'] = correlation_analysis
+            except Exception as e:
+                self.logger.warning(f"Correlation analysis failed: {str(e)}")
+                analysis_results['correlations'] = {'error': str(e)}
             
-            hypothesis_results = await self._run_hypothesis_tests(transformed_data, state)
-            analysis_results['hypothesis_tests'] = hypothesis_results
+            # Hypothesis tests
+            try:
+                hypothesis_tests = await self._perform_hypothesis_tests(input_data)
+                analysis_results['hypothesis_tests'] = hypothesis_tests
+            except Exception as e:
+                self.logger.warning(f"Hypothesis testing failed: {str(e)}")
+                analysis_results['hypothesis_tests'] = {'error': str(e)}
             
-            quality_assessment = await self._assess_analysis_quality(analysis_results, transformed_data)
-            analysis_results['analysis_quality'] = quality_assessment
+            # Spatial analysis
+            try:
+                spatial_analysis = await self._analyze_spatial_patterns(input_data)
+                analysis_results['spatial_analysis'] = spatial_analysis
+            except Exception as e:
+                self.logger.warning(f"Spatial analysis failed: {str(e)}")
+                analysis_results['spatial_analysis'] = {'error': str(e)}
             
-            # Generate summary statistics
-            summary_stats = await self._generate_summary_statistics(transformed_data)
-            analysis_results['summary_statistics'] = summary_stats
+            # Distribution analysis
+            try:
+                distribution_analysis = await self._analyze_distributions(input_data)
+                analysis_results['distributions'] = distribution_analysis
+            except Exception as e:
+                self.logger.warning(f"Distribution analysis failed: {str(e)}")
+                analysis_results['distributions'] = {'error': str(e)}
+            
+            # Outlier analysis
+            try:
+                outlier_analysis = await self._analyze_outliers(input_data)
+                analysis_results['outliers'] = outlier_analysis
+            except Exception as e:
+                self.logger.warning(f"Outlier analysis failed: {str(e)}")
+                analysis_results['outliers'] = {'error': str(e)}
+            
+            # Analysis quality
+            try:
+                analysis_quality = await self._calculate_analysis_quality(input_data)
+                analysis_results['quality_assessment'] = analysis_quality
+            except Exception as e:
+                self.logger.warning(f"Analysis quality calculation failed: {str(e)}")
+                analysis_results['quality_assessment'] = {'error': str(e)}
+            
+            # Summary statistics - FIX THE METHOD CALL
+            try:
+                summary_statistics = await self._create_summary_statistics(input_data)
+                analysis_results['summary_statistics'] = summary_statistics
+            except Exception as e:
+                self.logger.warning(f"Summary statistics creation failed: {str(e)}")
+                analysis_results['summary_statistics'] = {'error': str(e)}
+            
+            # Ensure output directories exist
+            docs_dir = Path(state.run_manifest['artifacts_paths']['docs_dir'])
+            docs_dir.mkdir(parents=True, exist_ok=True)
             
             # Save analysis results
-            results_path = Path(state.run_manifest['artifacts_paths']['docs_dir']) / "analysis_results.json"
-            with open(results_path, 'w') as f:
-                json.dump(analysis_results, f, indent=2, default=str)
+            try:
+                output_path = docs_dir / "analysis_results.json"
+                with open(output_path, 'w') as f:
+                    json.dump(analysis_results, f, indent=2, default=str)
+                self.logger.info(f"Saved analysis results to {output_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to save analysis results: {str(e)}")
             
             # Update state
             state.analysis_results = analysis_results
-            state.rows_processed = len(transformed_data)
             
-            self.logger.info(f"Analysis completed: {len(kpi_results)} KPIs, {len(correlation_results)} correlations")
-            
+            self.logger.info("Statistical analysis completed successfully")
             return state
             
         except Exception as e:
-            self.logger.error(f"Statistical analysis failed: {str(e)}")
-            state.errors.append(f"Statistical analysis failed: {str(e)}")
+            self.logger.error(f"Analysis failed: {str(e)}")
+            if not hasattr(state, 'errors'):
+                state.errors = []
+            state.errors.append(f"Analysis error: {str(e)}")
+            
+            # Create minimal analysis results to prevent cascade failure
+            state.analysis_results = {
+                'error': str(e),
+                'analysis_metadata': {
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'status': 'failed'
+                }
+            }
+            
             return state
-
-    async def _calculate_kpis(self, df: pd.DataFrame, state) -> List[Dict[str, Any]]:
-        """Calculate key performance indicators for numeric columns"""
-        self.logger.info("Calculating KPIs")
+    
+    async def _create_dataset_profile(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Create comprehensive dataset profile"""
         
-        kpis = []
-        numeric_columns = df.select_dtypes(include=[np.number]).columns
-        
-        # Domain-specific KPI priorities
-        domain = state.run_manifest['dataset_info']['domain_hint']
-        domain_metrics = self.config.get('domains', {}).get(domain, {}).get('key_metrics', [])
-        
-        for col in numeric_columns:
-            if df[col].isnull().all():
-                continue
-                
-            # Calculate basic statistics
-            col_data = df[col].dropna()
-            
-            kpi = {
-                'metric_name': col,
-                'metric_type': 'numeric',
-                'domain_relevance': 'high' if any(keyword in col.lower() for keyword in domain_metrics) else 'medium',
-                'sample_size': len(col_data),
-                'statistics': {
-                    'count': int(len(col_data)),
-                    'mean': float(col_data.mean()),
-                    'median': float(col_data.median()),
-                    'std': float(col_data.std()),
-                    'min': float(col_data.min()),
-                    'max': float(col_data.max()),
-                    'q25': float(col_data.quantile(0.25)),
-                    'q75': float(col_data.quantile(0.75)),
-                    'skewness': float(col_data.skew()),
-                    'kurtosis': float(col_data.kurtosis())
-                },
-                'data_quality': {
-                    'missing_values': int(df[col].isnull().sum()),
-                    'missing_percentage': float(df[col].isnull().sum() / len(df) * 100),
-                    'outliers_iqr': self._count_outliers_iqr(col_data),
-                    'zero_values': int((col_data == 0).sum())
-                }
-            }
-            
-            # Add percentile information for better context
-            kpi['percentiles'] = {
-                f'p{p}': float(col_data.quantile(p/100))
-                for p in [5, 10, 25, 50, 75, 90, 95]
-            }
-            
-            # Add domain-specific insights
-            if domain == 'transport' and any(keyword in col.lower() for keyword in ['registration', 'vehicle', 'license']):
-                kpi['domain_insights'] = self._get_transport_insights(col_data, col)
-            elif domain == 'health' and any(keyword in col.lower() for keyword in ['patient', 'case', 'treatment']):
-                kpi['domain_insights'] = self._get_health_insights(col_data, col)
-            elif domain == 'education' and any(keyword in col.lower() for keyword in ['student', 'enrollment', 'teacher']):
-                kpi['domain_insights'] = self._get_education_insights(col_data, col)
-            
-            kpis.append(kpi)
-        
-        # Sort KPIs by domain relevance and data quality
-        kpis.sort(key=lambda x: (
-            x['domain_relevance'] == 'high',
-            -x['data_quality']['missing_percentage'],
-            -x['sample_size']
-        ), reverse=True)
-        
-        return kpis
-
-    def _count_outliers_iqr(self, data: pd.Series) -> int:
-        """Count outliers using IQR method"""
-        try:
-            Q1 = data.quantile(0.25)
-            Q3 = data.quantile(0.75)
-            IQR = Q3 - Q1
-            lower_bound = Q1 - 1.5 * IQR
-            upper_bound = Q3 + 1.5 * IQR
-            outliers = ((data < lower_bound) | (data > upper_bound)).sum()
-            return int(outliers)
-        except:
-            return 0
-
-    def _get_transport_insights(self, data: pd.Series, column: str) -> Dict[str, Any]:
-        """Generate transport domain-specific insights"""
-        insights = {
-            'domain': 'transport',
-            'metric_category': 'vehicle_statistics'
+        profile = {
+            'basic_info': {
+                'rows': len(df),
+                'columns': len(df.columns),
+                'memory_usage_mb': df.memory_usage(deep=True).sum() / (1024 * 1024),
+                'duplicate_rows': df.duplicated().sum(),
+                'duplicate_percentage': (df.duplicated().sum() / len(df)) * 100
+            },
+            'column_types': {
+                'numeric': len(df.select_dtypes(include=[np.number]).columns),
+                'categorical': len(df.select_dtypes(include=['object', 'category']).columns),
+                'datetime': len(df.select_dtypes(include=['datetime64']).columns),
+                'boolean': len(df.select_dtypes(include=['bool']).columns)
+            },
+            'missing_data': {
+                'total_missing': df.isnull().sum().sum(),
+                'missing_percentage': (df.isnull().sum().sum() / (len(df) * len(df.columns))) * 100,
+                'columns_with_missing': df.isnull().sum()[df.isnull().sum() > 0].to_dict(),
+                'complete_rows': len(df.dropna()),
+                'complete_rows_percentage': (len(df.dropna()) / len(df)) * 100
+            },
+            'data_quality_flags': await self._assess_data_quality_flags(df)
         }
         
-        if 'registration' in column.lower():
-            insights['interpretation'] = 'Vehicle registration trends indicate transport infrastructure usage'
-            insights['policy_relevance'] = 'Monitor for capacity planning and infrastructure development'
-        elif 'license' in column.lower():
-            insights['interpretation'] = 'License statistics reflect driving population and compliance'
-            insights['policy_relevance'] = 'Useful for road safety and enforcement planning'
+        return profile
+    
+    async def _compute_kpis(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Compute comprehensive key performance indicators"""
         
-        # Add growth context if possible
-        if data.std() > 0:
-            cv = data.std() / data.mean()
-            insights['variability'] = 'high' if cv > 0.5 else 'medium' if cv > 0.2 else 'low'
-        
-        return insights
-
-    def _get_health_insights(self, data: pd.Series, column: str) -> Dict[str, Any]:
-        """Generate health domain-specific insights"""
-        insights = {
-            'domain': 'health',
-            'metric_category': 'health_statistics'
+        kpis = {
+            'numeric_summary': {},
+            'categorical_summary': {},
+            'time_series_summary': {},
+            'top_performers': {},
+            'trends_summary': {}
         }
         
-        if 'patient' in column.lower() or 'case' in column.lower():
-            insights['interpretation'] = 'Patient/case statistics indicate healthcare demand and utilization'
-            insights['policy_relevance'] = 'Critical for healthcare resource allocation and planning'
-        elif 'treatment' in column.lower():
-            insights['interpretation'] = 'Treatment metrics reflect healthcare service delivery'
-            insights['policy_relevance'] = 'Monitor for quality of care and accessibility'
-        
-        return insights
-
-    def _get_education_insights(self, data: pd.Series, column: str) -> Dict[str, Any]:
-        """Generate education domain-specific insights"""
-        insights = {
-            'domain': 'education',
-            'metric_category': 'education_statistics'
-        }
-        
-        if 'student' in column.lower() or 'enrollment' in column.lower():
-            insights['interpretation'] = 'Student/enrollment data reflects education system capacity and demand'
-            insights['policy_relevance'] = 'Essential for education infrastructure and resource planning'
-        elif 'teacher' in column.lower():
-            insights['interpretation'] = 'Teacher statistics indicate education system capacity'
-            insights['policy_relevance'] = 'Critical for maintaining education quality and student-teacher ratios'
-        
-        return insights
-
-    async def _analyze_trends(self, df: pd.DataFrame, state) -> List[Dict[str, Any]]:
-        """Analyze time trends in the data"""
-        self.logger.info("Analyzing time trends")
-        
-        trends = []
-        
-        # Identify time columns
-        time_columns = [col for col in df.columns if any(time_word in col.lower() for time_word in ['date', 'time', 'year', 'month', 'quarter'])]
-        numeric_columns = df.select_dtypes(include=[np.number]).columns
-        
-        if not time_columns or len(numeric_columns) == 0:
-            self.logger.info("No time columns or numeric data found for trend analysis")
-            return trends
-        
-        # Use the first suitable time column
-        time_col = time_columns[0]
-        
-        try:
-            # Convert to datetime if needed
-            if df[time_col].dtype != 'datetime64[ns]':
-                df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
-            
-            # Sort by time
-            df_sorted = df.sort_values(time_col).dropna(subset=[time_col])
-            
-            # Analyze trends for top numeric columns
-            for col in numeric_columns[:5]:  # Limit to top 5 metrics
-                if col == time_col:
-                    continue
-                    
-                # Create time series
-                time_series = df_sorted.groupby(time_col)[col].mean().dropna()
-                
-                if len(time_series) < 3:  # Need at least 3 points for trend
-                    continue
-                
-                # Calculate trend statistics
-                x_numeric = range(len(time_series))
-                y_values = time_series.values
-                
-                # Linear regression for trend
-                slope, intercept, r_value, p_value, std_err = stats.linregress(x_numeric, y_values)
-                
-                # Seasonality detection (basic autocorrelation)
-                seasonality_score = self._detect_seasonality(time_series)
-                
-                trend_info = {
-                    'metric': col,
-                    'time_column': time_col,
-                    'data_points': len(time_series),
-                    'time_range': {
-                        'start': str(time_series.index.min()),
-                        'end': str(time_series.index.max())
-                    },
-                    'trend_analysis': {
-                        'slope': float(slope),
-                        'direction': 'increasing' if slope > 0 else 'decreasing' if slope < 0 else 'stable',
-                        'strength': abs(r_value),
-                        'significance': p_value,
-                        'r_squared': r_value ** 2,
-                        'is_significant': p_value < self.significance_alpha
-                    },
-                    'seasonality': {
-                        'score': seasonality_score,
-                        'has_seasonality': seasonality_score > 0.3
-                    },
-                    'summary_statistics': {
-                        'mean': float(time_series.mean()),
-                        'std': float(time_series.std()),
-                        'min': float(time_series.min()),
-                        'max': float(time_series.max()),
-                        'volatility': float(time_series.std() / time_series.mean()) if time_series.mean() != 0 else 0
-                    }
-                }
-                
-                trends.append(trend_info)
-                
-        except Exception as e:
-            self.logger.warning(f"Trend analysis failed: {str(e)}")
-        
-        # Sort trends by significance and strength
-        trends.sort(key=lambda x: (x['trend_analysis']['is_significant'], x['trend_analysis']['strength']), reverse=True)
-        
-        return trends
-
-    def _detect_seasonality(self, time_series: pd.Series) -> float:
-        """Detect seasonality using autocorrelation"""
-        try:
-            if len(time_series) < 12:  # Need sufficient data
-                return 0.0
-            
-            # Calculate autocorrelation at different lags
-            autocorr_scores = []
-            for lag in [3, 6, 12]:  # Quarterly, semi-annual, annual patterns
-                if lag < len(time_series):
-                    autocorr = time_series.autocorr(lag=lag)
-                    if not np.isnan(autocorr):
-                        autocorr_scores.append(abs(autocorr))
-            
-            return max(autocorr_scores) if autocorr_scores else 0.0
-            
-        except:
-            return 0.0
-
-    async def _analyze_spatial_patterns(self, df: pd.DataFrame, state) -> Dict[str, Any]:
-        """Analyze spatial patterns and geographic inequalities"""
-        self.logger.info("Analyzing spatial patterns")
-        
-        spatial_analysis = {}
-        
-        # Identify geographic columns
-        domain = state.run_manifest['dataset_info']['domain_hint']
-        domain_geo_cols = self.config.get('domains', {}).get(domain, {}).get('geo_columns', [])
-        
-        geo_columns = [col for col in df.columns if any(geo_word in col.lower() for geo_word in ['district', 'mandal', 'village', 'zone', 'area', 'region'] + domain_geo_cols)]
-        numeric_columns = df.select_dtypes(include=[np.number]).columns
-        
-        if not geo_columns or len(numeric_columns) == 0:
-            self.logger.info("No geographic columns found for spatial analysis")
-            return spatial_analysis
-        
-        geo_col = geo_columns[0]  # Use first geographic column
-        
-        try:
-            # Analyze spatial distribution for top metrics
-            for col in numeric_columns[:3]:  # Limit to top 3 metrics
-                
-                # Calculate spatial statistics
-                spatial_stats = df.groupby(geo_col)[col].agg(['mean', 'sum', 'count', 'std']).fillna(0)
-                spatial_stats = spatial_stats[spatial_stats['count'] > 0]  # Remove empty groups
-                
-                if len(spatial_stats) < 2:
-                    continue
-                
-                # Calculate inequality measures
-                values = spatial_stats['mean'].values
-                gini_coefficient = self._calculate_gini_coefficient(values)
-                cv = spatial_stats['mean'].std() / spatial_stats['mean'].mean() if spatial_stats['mean'].mean() > 0 else 0
-                
-                # Identify top and bottom performing areas
-                top_areas = spatial_stats.nlargest(3, 'mean')[['mean', 'sum', 'count']].to_dict('index')
-                bottom_areas = spatial_stats.nsmallest(3, 'mean')[['mean', 'sum', 'count']].to_dict('index')
-                
-                spatial_analysis[col] = {
-                    'geographic_column': geo_col,
-                    'total_areas': len(spatial_stats),
-                    'inequality_measures': {
-                        'gini_coefficient': float(gini_coefficient),
-                        'coefficient_of_variation': float(cv),
-                        'inequality_level': 'high' if gini_coefficient > 0.4 else 'medium' if gini_coefficient > 0.25 else 'low'
-                    },
-                    'spatial_distribution': {
-                        'mean_across_areas': float(spatial_stats['mean'].mean()),
-                        'std_across_areas': float(spatial_stats['mean'].std()),
-                        'min_area_value': float(spatial_stats['mean'].min()),
-                        'max_area_value': float(spatial_stats['mean'].max()),
-                        'range_ratio': float(spatial_stats['mean'].max() / spatial_stats['mean'].min()) if spatial_stats['mean'].min() > 0 else float('inf')
-                    },
-                    'top_performing_areas': {area: {k: float(v) for k, v in stats.items()} for area, stats in top_areas.items()},
-                    'bottom_performing_areas': {area: {k: float(v) for k, v in stats.items()} for area, stats in bottom_areas.items()}
-                }
-                
-        except Exception as e:
-            self.logger.warning(f"Spatial analysis failed: {str(e)}")
-        
-        return spatial_analysis
-
-    def _calculate_gini_coefficient(self, values: np.ndarray) -> float:
-        """Calculate Gini coefficient for inequality measurement"""
-        try:
-            # Remove negative values and sort
-            values = np.array(values)
-            values = values[values >= 0]
-            values = np.sort(values)
-            
-            n = len(values)
-            if n == 0 or values.sum() == 0:
-                return 0.0
-            
-            # Calculate Gini coefficient
-            cumsum = np.cumsum(values)
-            gini = (n + 1 - 2 * np.sum(cumsum) / cumsum[-1]) / n
-            return max(0.0, min(1.0, gini))
-            
-        except:
-            return 0.0
-
-    async def _analyze_correlations(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
-        """Analyze correlations between numeric variables"""
-        self.logger.info("Analyzing correlations")
-        
-        correlations = []
-        numeric_columns = df.select_dtypes(include=[np.number]).columns
-        
-        if len(numeric_columns) < 2:
-            return correlations
-        
-        # Calculate correlation matrix
-        corr_matrix = df[numeric_columns].corr(method='spearman')
-        
-        # Extract significant correlations
-        for i, col1 in enumerate(numeric_columns):
-            for j, col2 in enumerate(numeric_columns):
-                if i >= j:  # Avoid duplicates and self-correlation
-                    continue
-                
-                correlation_value = corr_matrix.loc[col1, col2]
-                
-                if abs(correlation_value) >= self.correlation_threshold:
-                    
-                    # Calculate additional statistics
-                    data1 = df[col1].dropna()
-                    data2 = df[col2].dropna()
-                    
-                    # Get common indices for paired analysis
-                    common_idx = data1.index.intersection(data2.index)
-                    if len(common_idx) < self.min_sample_size:
-                        continue
-                    
-                    paired_data1 = data1.loc[common_idx]
-                    paired_data2 = data2.loc[common_idx]
-                    
-                    # Calculate Pearson correlation as well
-                    pearson_corr, pearson_p = pearsonr(paired_data1, paired_data2)
-                    
-                    correlation_info = {
-                        'variable_1': col1,
-                        'variable_2': col2,
-                        'correlation_coefficient': float(correlation_value),
-                        'correlation_strength': self._interpret_correlation_strength(abs(correlation_value)),
-                        'correlation_direction': 'positive' if correlation_value > 0 else 'negative',
-                        'sample_size': len(common_idx),
-                        'pearson_correlation': float(pearson_corr),
-                        'pearson_p_value': float(pearson_p),
-                        'is_significant': pearson_p < self.significance_alpha,
-                        'interpretation': self._interpret_correlation(col1, col2, correlation_value)
-                    }
-                    
-                    correlations.append(correlation_info)
-        
-        # Sort by absolute correlation strength
-        correlations.sort(key=lambda x: abs(x['correlation_coefficient']), reverse=True)
-        
-        return correlations
-
-    def _interpret_correlation_strength(self, abs_corr: float) -> str:
-        """Interpret correlation strength"""
-        if abs_corr >= 0.8:
-            return 'very_strong'
-        elif abs_corr >= 0.6:
-            return 'strong'
-        elif abs_corr >= 0.4:
-            return 'moderate'
-        elif abs_corr >= 0.2:
-            return 'weak'
-        else:
-            return 'very_weak'
-
-    def _interpret_correlation(self, var1: str, var2: str, correlation: float) -> str:
-        """Generate interpretation of correlation"""
-        direction = "positively" if correlation > 0 else "negatively"
-        strength = self._interpret_correlation_strength(abs(correlation))
-        
-        return f"{var1} and {var2} are {strength} {direction} correlated (r={correlation:.3f})"
-
-    async def _run_hypothesis_tests(self, df: pd.DataFrame, state) -> List[Dict[str, Any]]:
-        """Run hypothesis tests for group comparisons"""
-        self.logger.info("Running hypothesis tests")
-        
-        hypothesis_tests = []
-        
-        # Find categorical variables for grouping
-        categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+        # Numeric KPIs
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         
-        # Limit to prevent too many tests
-        categorical_cols = categorical_cols[:2]
-        numeric_cols = numeric_cols[:3]
+        for col in numeric_cols:
+            try:
+                series = df[col].dropna()
+                if len(series) == 0:
+                    continue
+                
+                kpis['numeric_summary'][col] = {
+                    'count': int(series.count()),
+                    'mean': float(series.mean()),
+                    'median': float(series.median()),
+                    'std': float(series.std()),
+                    'min': float(series.min()),
+                    'max': float(series.max()),
+                    'sum': float(series.sum()),
+                    'q25': float(series.quantile(0.25)),
+                    'q75': float(series.quantile(0.75)),
+                    'iqr': float(series.quantile(0.75) - series.quantile(0.25)),
+                    'coefficient_of_variation': float(series.std() / series.mean()) if series.mean() != 0 else 0,
+                    'skewness': float(series.skew()),
+                    'kurtosis': float(series.kurtosis()),
+                    'range': float(series.max() - series.min())
+                }
+                
+                # Percentile analysis
+                percentiles = [5, 10, 90, 95, 99]
+                for p in percentiles:
+                    kpis['numeric_summary'][col][f'p{p}'] = float(series.quantile(p/100))
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to compute KPIs for {col}: {e}")
         
-        for cat_col in categorical_cols:
-            # Only test groups with reasonable sample sizes
-            group_sizes = df[cat_col].value_counts()
-            valid_groups = group_sizes[group_sizes >= self.min_sample_size].index
+        # Categorical KPIs
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+        
+        for col in categorical_cols:
+            try:
+                series = df[col].dropna()
+                if len(series) == 0:
+                    continue
+                
+                value_counts = series.value_counts()
+                
+                kpis['categorical_summary'][col] = {
+                    'unique_count': len(value_counts),
+                    'most_frequent': value_counts.index[0] if len(value_counts) > 0 else None,
+                    'most_frequent_count': int(value_counts.iloc[0]) if len(value_counts) > 0 else 0,
+                    'most_frequent_percentage': float(value_counts.iloc[0] / len(series) * 100) if len(value_counts) > 0 else 0,
+                    'top_5_values': value_counts.head(5).to_dict(),
+                    'entropy': float(-sum(p * np.log2(p) for p in (value_counts / len(series)) if p > 0)),
+                    'concentration_ratio': float(value_counts.head(3).sum() / len(series))  # Top 3 concentration
+                }
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to compute categorical KPIs for {col}: {e}")
+        
+        # Time series KPIs (if time columns exist)
+        time_cols = [col for col in df.columns if 'year' in col.lower() or 'date' in col.lower() or 'time' in col.lower()]
+        
+        if time_cols:
+            kpis['time_series_summary'] = await self._compute_time_series_kpis(df, time_cols)
+        
+        # Top performers analysis
+        kpis['top_performers'] = await self._identify_top_performers(df)
+        
+        return kpis
+    
+    async def _analyze_trends(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze temporal trends in the data"""
+        
+        trends = {
+            'linear_trends': {},
+            'seasonal_patterns': {},
+            'growth_rates': {},
+            'trend_significance': {}
+        }
+        
+        # Find time columns
+        time_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in ['year', 'month', 'date', 'time'])]
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        if not time_cols or not numeric_cols:
+            return trends
+        
+        # Use first time column
+        time_col = time_cols[0]
+        
+        try:
+            # Sort by time
+            df_sorted = df.sort_values(time_col)
             
-            if len(valid_groups) < 2:
-                continue
-            
-            # Take top 2 groups for comparison
-            groups_to_compare = valid_groups[:2]
-            
-            for num_col in numeric_cols:
+            for metric_col in numeric_cols[:10]:  # Limit to 10 columns for performance
                 try:
-                    # Extract data for each group
-                    group1_data = df[df[cat_col] == groups_to_compare[0]][num_col].dropna()
-                    group2_data = df[df[cat_col] == groups_to_compare[1]][num_col].dropna()
-                    
-                    if len(group1_data) < self.min_sample_size or len(group2_data) < self.min_sample_size:
+                    # Linear trend analysis
+                    valid_data = df_sorted[[time_col, metric_col]].dropna()
+                    if len(valid_data) < 3:
                         continue
                     
-                    # Test for normality
-                    _, p_norm1 = normaltest(group1_data)
-                    _, p_norm2 = normaltest(group2_data)
-                    both_normal = p_norm1 > 0.05 and p_norm2 > 0.05
-                    
-                    # Test for equal variances
-                    _, p_levene = levene(group1_data, group2_data)
-                    equal_variances = p_levene > 0.05
-                    
-                    # Choose appropriate test
-                    if both_normal and equal_variances:
-                        # Independent t-test
-                        statistic, p_value = stats.ttest_ind(group1_data, group2_data)
-                        test_type = "independent_t_test"
-                        assumptions = "normal_distribution_equal_variances"
-                    elif both_normal and not equal_variances:
-                        # Welch's t-test
-                        statistic, p_value = stats.ttest_ind(group1_data, group2_data, equal_var=False)
-                        test_type = "welch_t_test"
-                        assumptions = "normal_distribution_unequal_variances"
+                    # Convert time to numeric for correlation
+                    if df_sorted[time_col].dtype == 'datetime64[ns]':
+                        time_numeric = pd.to_numeric(df_sorted[time_col])
                     else:
-                        # Mann-Whitney U test (non-parametric)
-                        statistic, p_value = stats.mannwhitneyu(group1_data, group2_data, alternative='two-sided')
-                        test_type = "mann_whitney_u"
-                        assumptions = "no_normality_assumed"
+                        time_numeric = pd.to_numeric(df_sorted[time_col], errors='coerce')
                     
-                    # Calculate effect size (Cohen's d)
-                    pooled_std = np.sqrt(((len(group1_data) - 1) * group1_data.var() + 
-                                        (len(group2_data) - 1) * group2_data.var()) / 
-                                       (len(group1_data) + len(group2_data) - 2))
-                    cohens_d = (group1_data.mean() - group2_data.mean()) / pooled_std if pooled_std > 0 else 0
+                    if time_numeric.isna().all():
+                        continue
                     
-                    effect_size_interpretation = self._interpret_effect_size(abs(cohens_d))
+                    # Calculate trend slope using linear regression
+                    valid_indices = ~(time_numeric.isna() | df_sorted[metric_col].isna())
+                    if valid_indices.sum() < 3:
+                        continue
                     
-                    test_result = {
-                        'test_type': test_type,
-                        'dependent_variable': num_col,
-                        'grouping_variable': cat_col,
-                        'group_1': {
-                            'name': str(groups_to_compare[0]),
-                            'size': len(group1_data),
-                            'mean': float(group1_data.mean()),
-                            'std': float(group1_data.std())
-                        },
-                        'group_2': {
-                            'name': str(groups_to_compare[1]),
-                            'size': len(group2_data),
-                            'mean': float(group2_data.mean()),
-                            'std': float(group2_data.std())
-                        },
-                        'test_statistics': {
-                            'statistic': float(statistic),
-                            'p_value': float(p_value),
-                            'is_significant': p_value < self.significance_alpha,
-                            'alpha_level': self.significance_alpha
-                        },
-                        'effect_size': {
-                            'cohens_d': float(cohens_d),
-                            'interpretation': effect_size_interpretation,
-                            'magnitude': abs(cohens_d)
-                        },
-                        'assumptions': assumptions,
-                        'conclusion': self._generate_test_conclusion(groups_to_compare, num_col, p_value, cohens_d)
+                    x = time_numeric[valid_indices].values.reshape(-1, 1)
+                    y = df_sorted[metric_col][valid_indices].values
+                    
+                    # Simple linear regression
+                    slope, intercept, r_value, p_value, std_err = stats.linregress(x.flatten(), y)
+                    
+                    trends['linear_trends'][metric_col] = {
+                        'slope': float(slope),
+                        'intercept': float(intercept),
+                        'r_squared': float(r_value ** 2),
+                        'p_value': float(p_value),
+                        'trend_direction': 'increasing' if slope > 0 else 'decreasing' if slope < 0 else 'stable',
+                        'trend_strength': 'strong' if abs(r_value) > 0.7 else 'moderate' if abs(r_value) > 0.3 else 'weak',
+                        'statistical_significance': p_value < self.significance_level
                     }
                     
-                    hypothesis_tests.append(test_result)
+                    # Growth rate analysis
+                    if len(valid_data) > 1:
+                        first_value = valid_data[metric_col].iloc[0]
+                        last_value = valid_data[metric_col].iloc[-1]
+                        
+                        if first_value != 0:
+                            total_growth = ((last_value - first_value) / first_value) * 100
+                            periods = len(valid_data) - 1
+                            compound_growth = ((last_value / first_value) ** (1/periods) - 1) * 100 if periods > 0 else 0
+                            
+                            trends['growth_rates'][metric_col] = {
+                                'total_growth_percent': float(total_growth),
+                                'compound_annual_growth_rate': float(compound_growth),
+                                'periods_analyzed': int(periods),
+                                'start_value': float(first_value),
+                                'end_value': float(last_value)
+                            }
+                    
+                    # Seasonal pattern detection (if enough data points)
+                    if len(valid_data) >= 12:  # Need at least 12 points for seasonal analysis
+                        seasonal_analysis = await self._detect_seasonality(valid_data[metric_col])
+                        if seasonal_analysis:
+                            trends['seasonal_patterns'][metric_col] = seasonal_analysis
                     
                 except Exception as e:
-                    self.logger.warning(f"Hypothesis test failed for {num_col} by {cat_col}: {str(e)}")
+                    self.logger.warning(f"Failed to analyze trends for {metric_col}: {e}")
         
-        # Sort by significance and effect size
-        hypothesis_tests.sort(key=lambda x: (x['test_statistics']['is_significant'], x['effect_size']['magnitude']), reverse=True)
+        except Exception as e:
+            self.logger.warning(f"Trend analysis failed: {e}")
+        
+        return trends
+    
+    async def _analyze_correlations(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze correlations between variables with robust error handling"""
+        
+        correlations = {
+            'pearson_correlations': {},
+            'spearman_correlations': {},
+            'significant_correlations': [],
+            'correlation_summary': {},
+            'strong_correlations': []
+        }
+        
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        if len(numeric_cols) < 2:
+            return correlations
+        
+        try:
+            # Clean data first - remove columns with all NaN or constant values
+            clean_numeric_cols = []
+            for col in numeric_cols:
+                col_data = df[col].dropna()
+                if len(col_data) > 1 and col_data.nunique() > 1:
+                    clean_numeric_cols.append(col)
+            
+            if len(clean_numeric_cols) < 2:
+                return correlations
+            
+            # Compute correlation matrices
+            df_clean = df[clean_numeric_cols].dropna()
+            
+            if len(df_clean) < 3:
+                return correlations
+            
+            # Pearson correlations
+            try:
+                pearson_corr = df_clean.corr(method='pearson')
+                correlations['pearson_correlations'] = pearson_corr.fillna(0).to_dict()
+            except Exception as e:
+                self.logger.warning(f"Pearson correlation failed: {e}")
+            
+            # Spearman correlations
+            try:
+                spearman_corr = df_clean.corr(method='spearman')
+                correlations['spearman_correlations'] = spearman_corr.fillna(0).to_dict()
+            except Exception as e:
+                self.logger.warning(f"Spearman correlation failed: {e}")
+            
+            # Find significant correlations with robust error handling
+            significant_pairs = []
+            strong_correlations = []
+            
+            for i in range(len(clean_numeric_cols)):
+                for j in range(i+1, len(clean_numeric_cols)):
+                    col1, col2 = clean_numeric_cols[i], clean_numeric_cols[j]
+                    
+                    try:
+                        # Get clean data for both columns
+                        data1 = df_clean[col1].dropna()
+                        data2 = df_clean[col2].dropna()
+                        
+                        # Ensure same length
+                        common_idx = df_clean[[col1, col2]].dropna().index
+                        if len(common_idx) < 3:
+                            continue
+                        
+                        data1_aligned = df_clean.loc[common_idx, col1]
+                        data2_aligned = df_clean.loc[common_idx, col2]
+                        
+                        # Check for variance
+                        if data1_aligned.var() == 0 or data2_aligned.var() == 0:
+                            continue
+                        
+                            # Pearson correlation test
+                        try:
+                            pearson_r, p_value_pearson = pearsonr(data1_aligned, data2_aligned)
+                            if np.isnan(pearson_r):
+                                continue
+                        except Exception as e:
+                            self.logger.warning(f"Pearson test failed for {col1}-{col2}: {e}")
+                            continue
+                            
+                            # Spearman correlation test
+                        try:
+                            spearman_r, p_value_spearman = spearmanr(data1_aligned, data2_aligned)
+                            if np.isnan(spearman_r):
+                                spearman_r = 0.0
+                                p_value_spearman = 1.0
+                        except Exception as e:
+                            self.logger.warning(f"Spearman test failed for {col1}-{col2}: {e}")
+                            spearman_r = 0.0
+                            p_value_spearman = 1.0
+                            
+                            correlation_pair = {
+                                'variable_1': col1,
+                                'variable_2': col2,
+                                'pearson_r': float(pearson_r),
+                                'spearman_r': float(spearman_r),
+                                'pearson_p_value': float(p_value_pearson),
+                                'spearman_p_value': float(p_value_spearman),
+                                'pearson_significant': p_value_pearson < self.significance_level,
+                                'spearman_significant': p_value_spearman < self.significance_level,
+                            'correlation_strength': self._classify_correlation_strength(abs(pearson_r)),
+                            'sample_size': len(data1_aligned)
+                            }
+                            
+                            if p_value_pearson < self.significance_level or p_value_spearman < self.significance_level:
+                                significant_pairs.append(correlation_pair)
+                            
+                            if abs(pearson_r) > 0.7 or abs(spearman_r) > 0.7:
+                                strong_correlations.append(correlation_pair)
+                                
+                    except Exception as e:
+                        self.logger.warning(f"Failed to test correlation significance for {col1}-{col2}: {e}")
+                        continue
+            
+            correlations['significant_correlations'] = significant_pairs
+            correlations['strong_correlations'] = strong_correlations
+            
+            # Correlation summary
+            correlations['correlation_summary'] = {
+                'total_pairs_tested': len(clean_numeric_cols) * (len(clean_numeric_cols) - 1) // 2,
+                'significant_pairs': len(significant_pairs),
+                'strong_correlations': len(strong_correlations),
+                'columns_analyzed': len(clean_numeric_cols)
+            }
+        
+        except Exception as e:
+            self.logger.warning(f"Correlation analysis failed: {e}")
+            correlations['error'] = str(e)
+        
+        return correlations
+    
+    async def _perform_hypothesis_tests(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Perform statistical hypothesis tests"""
+        
+        hypothesis_tests = {
+            'group_comparisons': [],
+            'independence_tests': [],
+            'normality_tests': {},
+            'test_summary': {}
+        }
+        
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        
+        # Group comparison tests
+        for cat_col in categorical_cols[:3]:  # Limit to 3 categorical columns
+            unique_groups = df[cat_col].dropna().unique()
+            
+            if 2 <= len(unique_groups) <= 5:  # Only test if reasonable number of groups
+                for num_col in numeric_cols[:5]:  # Limit to 5 numeric columns
+                    try:
+                        groups_data = []
+                        group_names = []
+                        
+                        for group in unique_groups:
+                            group_data = df[df[cat_col] == group][num_col].dropna()
+                            if len(group_data) >= 3:  # Minimum sample size
+                                groups_data.append(group_data)
+                                group_names.append(group)
+                        
+                        if len(groups_data) >= 2:
+                            # Perform appropriate test based on number of groups
+                            if len(groups_data) == 2:
+                                # Two-sample tests
+                                group1, group2 = groups_data[0], groups_data[1]
+                                
+                                # Check normality first
+                                _, p_norm1 = stats.shapiro(group1.sample(min(len(group1), 5000)))
+                                _, p_norm2 = stats.shapiro(group2.sample(min(len(group2), 5000)))
+                                
+                                normal_dist = p_norm1 > 0.05 and p_norm2 > 0.05
+                                
+                                if normal_dist:
+                                    # t-test
+                                    statistic, p_value = ttest_ind(group1, group2)
+                                    test_name = "Independent t-test"
+                                else:
+                                    # Mann-Whitney U test
+                                    statistic, p_value = mannwhitneyu(group1, group2, alternative='two-sided')
+                                    test_name = "Mann-Whitney U test"
+                                
+                                effect_size = abs(group1.mean() - group2.mean()) / np.sqrt(((group1.std()**2) + (group2.std()**2)) / 2)
+                                
+                                hypothesis_tests['group_comparisons'].append({
+                                    'grouping_variable': cat_col,
+                                    'test_variable': num_col,
+                                    'test_type': test_name,
+                                    'groups_tested': group_names,
+                                    'statistic': float(statistic),
+                                    'p_value': float(p_value),
+                                    'significant': p_value < self.significance_level,
+                                    'effect_size': float(effect_size),
+                                    'effect_size_interpretation': self._classify_effect_size(effect_size),
+                                    'group_means': {str(name): float(data.mean()) for name, data in zip(group_names, groups_data)}
+                                })
+                            
+                            else:
+                                # Multiple groups - ANOVA or Kruskal-Wallis
+                                try:
+                                    # Check normality assumption for ANOVA
+                                    normality_ok = all(stats.shapiro(group.sample(min(len(group), 5000)))[1] > 0.05 
+                                                     for group in groups_data)
+                                    
+                                    if normality_ok:
+                                        # One-way ANOVA
+                                        statistic, p_value = stats.f_oneway(*groups_data)
+                                        test_name = "One-way ANOVA"
+                                    else:
+                                        # Kruskal-Wallis test
+                                        statistic, p_value = stats.kruskal(*groups_data)
+                                        test_name = "Kruskal-Wallis test"
+                                    
+                                    hypothesis_tests['group_comparisons'].append({
+                                        'grouping_variable': cat_col,
+                                        'test_variable': num_col,
+                                        'test_type': test_name,
+                                        'groups_tested': group_names,
+                                        'statistic': float(statistic),
+                                        'p_value': float(p_value),
+                                        'significant': p_value < self.significance_level,
+                                        'group_means': {str(name): float(data.mean()) for name, data in zip(group_names, groups_data)}
+                                    })
+                                    
+                                except Exception as e:
+                                    self.logger.warning(f"Multi-group test failed for {cat_col}-{num_col}: {e}")
+                    
+                    except Exception as e:
+                        self.logger.warning(f"Group comparison test failed for {cat_col}-{num_col}: {e}")
+        
+        # Independence tests (Chi-square)
+        for i, cat_col1 in enumerate(categorical_cols[:3]):
+            for cat_col2 in categorical_cols[i+1:4]:  # Avoid duplicate tests
+                try:
+                    contingency_table = pd.crosstab(df[cat_col1], df[cat_col2])
+                    
+                    if contingency_table.size > 1 and contingency_table.sum().sum() > 5:
+                        chi2, p_value, dof, expected = chi2_contingency(contingency_table)
+                        
+                        # Cramér's V for effect size
+                        n = contingency_table.sum().sum()
+                        cramers_v = np.sqrt(chi2 / (n * (min(contingency_table.shape) - 1)))
+                        
+                        hypothesis_tests['independence_tests'].append({
+                            'variable_1': cat_col1,
+                            'variable_2': cat_col2,
+                            'test_type': "Chi-square test of independence",
+                            'chi2_statistic': float(chi2),
+                            'p_value': float(p_value),
+                            'degrees_of_freedom': int(dof),
+                            'significant': p_value < self.significance_level,
+                            'cramers_v': float(cramers_v),
+                            'effect_size_interpretation': self._classify_cramers_v(cramers_v),
+                            'contingency_table': contingency_table.to_dict()
+                        })
+                
+                except Exception as e:
+                    self.logger.warning(f"Independence test failed for {cat_col1}-{cat_col2}: {e}")
+        
+        # Normality tests for numeric variables
+        for col in numeric_cols[:10]:  # Limit to 10 columns
+            try:
+                data = df[col].dropna()
+                if len(data) > 3:
+                    # Shapiro-Wilk test (for smaller samples)
+                    if len(data) <= 5000:
+                        statistic, p_value = stats.shapiro(data)
+                        test_name = "Shapiro-Wilk"
+                    else:
+                        # Kolmogorov-Smirnov test (for larger samples)
+                        statistic, p_value = stats.kstest(data, 'norm', args=(data.mean(), data.std()))
+                        test_name = "Kolmogorov-Smirnov"
+                    
+                    hypothesis_tests['normality_tests'][col] = {
+                        'test_type': test_name,
+                        'statistic': float(statistic),
+                        'p_value': float(p_value),
+                        'normal_distribution': p_value > self.significance_level,
+                        'sample_size': len(data)
+                    }
+            
+            except Exception as e:
+                self.logger.warning(f"Normality test failed for {col}: {e}")
+        
+        # Test summary
+        hypothesis_tests['test_summary'] = {
+            'total_group_comparisons': len(hypothesis_tests['group_comparisons']),
+            'significant_group_differences': sum(1 for test in hypothesis_tests['group_comparisons'] if test['significant']),
+            'total_independence_tests': len(hypothesis_tests['independence_tests']),
+            'significant_associations': sum(1 for test in hypothesis_tests['independence_tests'] if test['significant']),
+            'variables_tested_for_normality': len(hypothesis_tests['normality_tests']),
+            'normally_distributed_variables': sum(1 for test in hypothesis_tests['normality_tests'].values() if test['normal_distribution'])
+        }
         
         return hypothesis_tests
-
-    def _interpret_effect_size(self, abs_cohens_d: float) -> str:
-        """Interpret Cohen's d effect size"""
-        thresholds = self.stats_config.get('effect_size_thresholds', {'small': 0.2, 'medium': 0.5, 'large': 0.8})
+    
+    async def _analyze_spatial_patterns(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze spatial/geographic patterns in the data"""
         
-        if abs_cohens_d >= thresholds['large']:
+        spatial_analysis = {
+            'geographic_columns': [],
+            'spatial_distribution': {},
+            'regional_comparisons': {},
+            'geographic_trends': {}
+        }
+        
+        # Identify geographic columns
+        geo_keywords = ['district', 'state', 'city', 'region', 'location', 'area', 'zone', 'mandal', 'tehsil']
+        geo_cols = []
+        
+        for col in df.columns:
+            if any(keyword in col.lower() for keyword in geo_keywords):
+                geo_cols.append(col)
+        
+        spatial_analysis['geographic_columns'] = geo_cols
+        
+        if not geo_cols:
+            return spatial_analysis
+        
+        # Use primary geographic column
+        primary_geo_col = geo_cols[0]
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        try:
+            # Spatial distribution analysis
+            geo_summary = {}
+            for geo_unit in df[primary_geo_col].dropna().unique():
+                geo_data = df[df[primary_geo_col] == geo_unit]
+                
+                geo_summary[str(geo_unit)] = {
+                    'record_count': len(geo_data),
+                    'data_completeness': (geo_data.notna().sum().sum() / (len(geo_data) * len(geo_data.columns))) * 100
+                }
+                
+                # Add numeric summaries
+                for num_col in numeric_cols[:5]:  # Limit to 5 columns
+                    if num_col in geo_data.columns:
+                        values = geo_data[num_col].dropna()
+                        if len(values) > 0:
+                            geo_summary[str(geo_unit)][f"{num_col}_total"] = float(values.sum())
+                            geo_summary[str(geo_unit)][f"{num_col}_mean"] = float(values.mean())
+                            geo_summary[str(geo_unit)][f"{num_col}_median"] = float(values.median())
+            
+            spatial_analysis['spatial_distribution'] = geo_summary
+            
+            # Regional comparisons (top and bottom performers)
+            for num_col in numeric_cols[:3]:  # Limit to 3 columns
+                try:
+                    regional_stats = df.groupby(primary_geo_col)[num_col].agg(['sum', 'mean', 'count']).reset_index()
+                    regional_stats = regional_stats.dropna()
+                    
+                    if len(regional_stats) > 1:
+                        # Top and bottom performers by total
+                        top_performers = regional_stats.nlargest(5, 'sum')
+                        bottom_performers = regional_stats.nsmallest(5, 'sum')
+                        
+                        # Calculate inequality metrics with safe error handling
+                        total_values = regional_stats['sum'].values
+                        if len(total_values) > 1 and total_values.sum() > 0:
+                            try:
+                                # Gini coefficient
+                                gini = self._calculate_gini_coefficient(total_values)
+                                
+                                # Coefficient of variation
+                                cv = float(regional_stats['sum'].std() / regional_stats['sum'].mean()) if regional_stats['sum'].mean() > 0 else 0.0
+                                
+                                # Max-min ratio
+                                max_min_ratio = float(regional_stats['sum'].max() / regional_stats['sum'].min()) if regional_stats['sum'].min() > 0 else float('inf')
+                                
+                                spatial_analysis['regional_comparisons'][num_col] = {
+                                    'top_5_regions': top_performers.to_dict('records'),
+                                    'bottom_5_regions': bottom_performers.to_dict('records'),
+                                    'inequality_metrics': {
+                                        'gini_coefficient': gini,
+                                        'coefficient_of_variation': cv,
+                                        'max_min_ratio': max_min_ratio
+                                    },
+                                    'regional_summary': {
+                                        'total_regions': len(regional_stats),
+                                        'total_value': float(regional_stats['sum'].sum()),
+                                        'average_per_region': float(regional_stats['sum'].mean()),
+                                        'median_per_region': float(regional_stats['sum'].median())
+                                    }
+                                }
+                            except Exception as e:
+                                self.logger.warning(f"Inequality metrics calculation failed for {num_col}: {e}")
+                
+                except Exception as e:
+                    self.logger.warning(f"Regional comparison failed for {num_col}: {e}")
+        
+        except Exception as e:
+            self.logger.warning(f"Spatial analysis failed: {e}")
+        
+        return spatial_analysis
+    
+    async def _analyze_distributions(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze statistical distributions of numeric variables"""
+        
+        distributions = {
+            'distribution_tests': {},
+            'distribution_parameters': {},
+            'outlier_analysis': {},
+            'skewness_analysis': {}
+        }
+        
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        for col in numeric_cols[:10]:  # Limit to 10 columns
+            try:
+                data = df[col].dropna()
+                if len(data) < 3:
+                    continue
+                
+                # Basic distribution parameters
+                distributions['distribution_parameters'][col] = {
+                    'mean': float(data.mean()),
+                    'median': float(data.median()),
+                    'mode': float(data.mode().iloc[0]) if len(data.mode()) > 0 else float(data.median()),
+                    'std': float(data.std()),
+                    'variance': float(data.var()),
+                    'skewness': float(data.skew()),
+                    'kurtosis': float(data.kurtosis()),
+                    'range': float(data.max() - data.min()),
+                    'iqr': float(data.quantile(0.75) - data.quantile(0.25))
+                }
+                
+                # Skewness analysis
+                skewness = data.skew()
+                if abs(skewness) < 0.5:
+                    skew_interpretation = "approximately symmetric"
+                elif abs(skewness) < 1:
+                    skew_interpretation = "moderately skewed"
+                else:
+                    skew_interpretation = "highly skewed"
+                
+                skew_direction = "right" if skewness > 0 else "left" if skewness < 0 else "symmetric"
+                
+                distributions['skewness_analysis'][col] = {
+                    'skewness_value': float(skewness),
+                    'skew_direction': skew_direction,
+                    'skew_interpretation': skew_interpretation
+                }
+                
+                # Test for common distributions
+                distribution_tests = {}
+                
+                # Test for normal distribution
+                if len(data) <= 5000:
+                    _, p_normal = stats.shapiro(data)
+                else:
+                    _, p_normal = stats.jarque_bera(data)
+                
+                distribution_tests['normal'] = {
+                    'p_value': float(p_normal),
+                    'is_normal': p_normal > self.significance_level
+                }
+                
+                # Test for exponential distribution
+                try:
+                    if data.min() >= 0:  # Exponential distribution requires non-negative values
+                        scale_param = data.mean()
+                        _, p_exp = stats.kstest(data, lambda x: stats.expon.cdf(x, scale=scale_param))
+                        distribution_tests['exponential'] = {
+                            'p_value': float(p_exp),
+                            'is_exponential': p_exp > self.significance_level
+                        }
+                except:
+                    pass
+                
+                distributions['distribution_tests'][col] = distribution_tests
+                
+            except Exception as e:
+                self.logger.warning(f"Distribution analysis failed for {col}: {e}")
+        
+        return distributions
+    
+    async def _analyze_outliers(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Comprehensive outlier analysis"""
+        
+        outlier_analysis = {
+            'outlier_detection': {},
+            'outlier_summary': {},
+            'outlier_impact': {}
+        }
+        
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        for col in numeric_cols[:10]:  # Limit to 10 columns
+            try:
+                data = df[col].dropna()
+                if len(data) < 4:
+                    continue
+                
+                # Multiple outlier detection methods
+                outlier_methods = {}
+                
+                # 1. IQR method
+                Q1 = data.quantile(0.25)
+                Q3 = data.quantile(0.75)
+                IQR = Q3 - Q1
+                lower_bound = Q1 - 1.5 * IQR
+                upper_bound = Q3 + 1.5 * IQR
+                
+                iqr_outliers = (data < lower_bound) | (data > upper_bound)
+                outlier_methods['iqr'] = {
+                    'outlier_count': int(iqr_outliers.sum()),
+                    'outlier_percentage': float(iqr_outliers.sum() / len(data) * 100),
+                    'lower_bound': float(lower_bound),
+                    'upper_bound': float(upper_bound)
+                }
+                
+                # 2. Z-score method
+                z_scores = np.abs(stats.zscore(data))
+                z_outliers = z_scores > 3
+                outlier_methods['zscore'] = {
+                    'outlier_count': int(z_outliers.sum()),
+                    'outlier_percentage': float(z_outliers.sum() / len(data) * 100),
+                    'threshold': 3.0
+                }
+                
+                # 3. Modified Z-score method (using median)
+                median = data.median()
+                mad = np.median(np.abs(data - median))
+                modified_z_scores = 0.6745 * (data - median) / mad if mad > 0 else np.zeros_like(data)
+                modified_z_outliers = np.abs(modified_z_scores) > 3.5
+                outlier_methods['modified_zscore'] = {
+                    'outlier_count': int(modified_z_outliers.sum()),
+                    'outlier_percentage': float(modified_z_outliers.sum() / len(data) * 100),
+                    'threshold': 3.5
+                }
+                
+                outlier_analysis['outlier_detection'][col] = outlier_methods
+                
+                # Outlier impact analysis
+                if iqr_outliers.any():
+                    data_without_outliers = data[~iqr_outliers]
+                    
+                    impact = {
+                        'mean_change': float(abs(data.mean() - data_without_outliers.mean())),
+                        'median_change': float(abs(data.median() - data_without_outliers.median())),
+                        'std_change': float(abs(data.std() - data_without_outliers.std())),
+                        'most_extreme_outlier': float(data[iqr_outliers].iloc[0]) if len(data[iqr_outliers]) > 0 else None
+                    }
+                    
+                    outlier_analysis['outlier_impact'][col] = impact
+                
+            except Exception as e:
+                self.logger.warning(f"Outlier analysis failed for {col}: {e}")
+        
+        # Overall outlier summary
+        total_outliers = sum(
+            methods.get('iqr', {}).get('outlier_count', 0) 
+            for methods in outlier_analysis['outlier_detection'].values()
+        )
+        
+        total_data_points = len(df) * len(numeric_cols)
+        
+        outlier_analysis['outlier_summary'] = {
+            'total_outliers_detected': total_outliers,
+            'overall_outlier_percentage': (total_outliers / total_data_points * 100) if total_data_points > 0 else 0,
+            'columns_with_outliers': len([col for col in outlier_analysis['outlier_detection'] if outlier_analysis['outlier_detection'][col]['iqr']['outlier_count'] > 0]),
+            'recommendation': 'Consider outlier treatment' if total_outliers > total_data_points * 0.05 else 'Outlier levels are acceptable'
+        }
+        
+        return outlier_analysis
+    
+    async def _calculate_analysis_quality(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Calculate overall analysis quality score"""
+        
+        scores = {
+            'completeness_score': 0,
+            'sample_size_score': 0,
+            'variability_score': 0,
+            'data_type_diversity_score': 0,
+            'overall_score': 0
+        }
+        
+        # Completeness score (0-100)
+        completeness = (1 - df.isna().sum().sum() / (len(df) * len(df.columns))) * 100
+        scores['completeness_score'] = max(0, min(100, completeness))
+        
+        # Sample size score (0-100)
+        if len(df) >= 1000:
+            scores['sample_size_score'] = 100
+        elif len(df) >= 100:
+            scores['sample_size_score'] = 80
+        elif len(df) >= 30:
+            scores['sample_size_score'] = 60
+        else:
+            scores['sample_size_score'] = 30
+        
+        # Variability score (0-100)
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            non_constant_cols = sum(1 for col in numeric_cols if df[col].nunique() > 1)
+            scores['variability_score'] = (non_constant_cols / len(numeric_cols)) * 100
+        else:
+            scores['variability_score'] = 50
+        
+        # Data type diversity score (0-100)
+        data_types = df.dtypes.value_counts()
+        type_diversity = min(len(data_types) / 3, 1) * 100  # Max score if 3+ different types
+        scores['data_type_diversity_score'] = type_diversity
+        
+        # Overall score (weighted average)
+        weights = {
+            'completeness_score': 0.3,
+            'sample_size_score': 0.25,
+            'variability_score': 0.25,
+            'data_type_diversity_score': 0.2
+        }
+        
+        overall = sum(scores[key] * weights[key] for key in weights) / 100
+        scores['overall_score'] = round(overall, 3)
+        
+        return scores
+    
+    async def _generate_statistical_summary(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Generate comprehensive statistical summary"""
+        
+        summary = {
+            'data_overview': {
+                'shape': df.shape,
+                'memory_usage_mb': float(df.memory_usage(deep=True).sum() / (1024 * 1024)),
+                'data_types': df.dtypes.value_counts().to_dict()
+            },
+            'completeness': {
+                'overall_completeness': float((1 - df.isna().sum().sum() / (len(df) * len(df.columns))) * 100),
+                'columns_with_missing': len([col for col in df.columns if df[col].isna().any()]),
+                'complete_rows': int((~df.isna().any(axis=1)).sum())
+            },
+            'variability': {},
+            'data_quality_flags': []
+        }
+        
+        # Variability analysis
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            cv_values = []
+            for col in numeric_cols:
+                mean_val = df[col].mean()
+                if mean_val != 0:
+                    cv = df[col].std() / mean_val
+                    cv_values.append(cv)
+            
+            if cv_values:
+                summary['variability'] = {
+                    'average_coefficient_variation': float(np.mean(cv_values)),
+                    'high_variability_columns': len([cv for cv in cv_values if cv > 1.0])
+                }
+        
+        # Data quality flags
+        if summary['completeness']['overall_completeness'] < 90:
+            summary['data_quality_flags'].append("High level of missing data detected")
+        
+        if df.duplicated().sum() > len(df) * 0.05:
+            summary['data_quality_flags'].append("High number of duplicate rows detected")
+        
+        return summary
+    
+    async def _assess_data_quality_flags(self, df: pd.DataFrame) -> List[str]:
+        """Assess data quality and return list of issues/flags"""
+        flags = []
+        
+        # Check completeness
+        missing_percentage = (df.isnull().sum().sum() / (len(df) * len(df.columns))) * 100
+        if missing_percentage > 10:
+            flags.append(f"High level of missing data ({missing_percentage:.1f}%)")
+        
+        # Check duplicates
+        duplicate_percentage = (df.duplicated().sum() / len(df)) * 100
+        if duplicate_percentage > 5:
+            flags.append(f"High number of duplicate rows ({duplicate_percentage:.1f}%)")
+        
+        # Check data type consistency
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                unique_ratio = df[col].nunique() / len(df)
+                if unique_ratio > 0.8 and df[col].nunique() > 100:
+                    flags.append(f"Column '{col}' has very high cardinality")
+        
+        # Check for potential outliers in numeric columns
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            outlier_count = self._count_outliers_iqr(df[col])
+            if outlier_count > len(df) * 0.05:
+                flags.append(f"Column '{col}' has many outliers ({outlier_count} values)")
+        
+        # Check for constant columns
+        constant_cols = [col for col in df.columns if df[col].nunique() <= 1]
+        if constant_cols:
+            flags.append(f"Constant columns detected: {', '.join(constant_cols)}")
+        
+        return flags
+    
+    async def _identify_top_performers(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Identify top performing entities based on key metrics"""
+        top_performers = {
+            'analysis_method': 'Multi-metric scoring',
+            'top_entities': [],
+            'performance_metrics': {},
+            'ranking_criteria': []
+        }
+        
+        try:
+            # Find potential entity identifier columns (area, district, region, etc.)
+            entity_cols = []
+            for col in df.columns:
+                if any(keyword in col.lower() for keyword in 
+                       ['area', 'district', 'region', 'zone', 'division', 'mandal', 'block', 'village']):
+                    if df[col].dtype == 'object' and df[col].nunique() > 1:
+                        entity_cols.append(col)
+            
+            if not entity_cols:
+                top_performers['note'] = 'No clear entity identifier columns found'
+                return top_performers
+            
+            # Use the first suitable entity column
+            entity_col = entity_cols[0]
+            top_performers['entity_column'] = entity_col
+            top_performers['ranking_criteria'].append(f'Grouped by {entity_col}')
+            
+            # Find numeric performance metrics
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            # Remove outlier flag columns and utility columns
+            performance_cols = [col for col in numeric_cols 
+                              if not col.endswith('_outlier_flag') 
+                              and not any(x in col.lower() for x in ['id', 'code', 'year', 'flag'])]
+            
+            if len(performance_cols) < 2:
+                top_performers['note'] = 'Insufficient numeric metrics for performance analysis'
+                return top_performers
+            
+            # Aggregate by entity and compute performance scores
+            entity_performance = []
+            
+            for entity in df[entity_col].dropna().unique():
+                entity_data = df[df[entity_col] == entity]
+                
+                if len(entity_data) == 0:
+                    continue
+                
+                # Calculate performance metrics
+                performance_score = 0
+                metric_count = 0
+                entity_metrics = {'entity': entity}
+                
+                for col in performance_cols[:8]:  # Limit to top 8 metrics
+                    values = entity_data[col].dropna()
+                    if len(values) > 0:
+                        metric_value = values.mean()
+                        entity_metrics[f'{col}_avg'] = float(metric_value)
+                        
+                        # Normalize score (higher is better, assuming positive metrics)
+                        col_max = df[col].max()
+                        col_min = df[col].min()
+                        if col_max > col_min:
+                            normalized_score = (metric_value - col_min) / (col_max - col_min)
+                            performance_score += normalized_score
+                            metric_count += 1
+                
+                # Calculate final performance score
+                if metric_count > 0:
+                    entity_metrics['overall_performance_score'] = float(performance_score / metric_count)
+                    entity_metrics['metrics_count'] = metric_count
+                    entity_performance.append(entity_metrics)
+            
+            # Sort by performance score and get top performers
+            entity_performance.sort(key=lambda x: x['overall_performance_score'], reverse=True)
+            
+            # Store top 10 performers
+            top_performers['top_entities'] = entity_performance[:10]
+            top_performers['total_entities_analyzed'] = len(entity_performance)
+            
+            # Store performance metrics summary
+            if entity_performance:
+                scores = [e['overall_performance_score'] for e in entity_performance]
+                top_performers['performance_metrics'] = {
+                    'highest_score': float(max(scores)),
+                    'lowest_score': float(min(scores)),
+                    'average_score': float(np.mean(scores)),
+                    'score_std': float(np.std(scores))
+                }
+            
+            top_performers['ranking_criteria'].extend([
+                f'Based on {len(performance_cols)} numeric metrics',
+                'Normalized scoring (0-1 scale)',
+                'Higher scores indicate better performance'
+            ])
+            
+        except Exception as e:
+            top_performers['error'] = f"Top performers analysis failed: {str(e)}"
+            self.logger.warning(f"Top performers analysis failed: {str(e)}")
+        
+        return top_performers
+    
+    def _classify_correlation_strength(self, correlation: float) -> str:
+        """Classify correlation strength based on absolute value"""
+        abs_corr = abs(correlation)
+        if abs_corr >= 0.7:
+            return 'strong'
+        elif abs_corr >= 0.5:
+            return 'moderate'
+        elif abs_corr >= 0.3:
+            return 'weak'
+        else:
+            return 'negligible'
+    
+    def _classify_cramers_v(self, cramers_v: float) -> str:
+        """Classify Cramer's V strength"""
+        if cramers_v >= 0.25:
+            return 'strong'
+        elif cramers_v >= 0.15:
+            return 'moderate'
+        elif cramers_v >= 0.05:
+            return 'weak'
+        else:
+            return 'negligible'
+    
+    def _calculate_gini_coefficient(self, values) -> float:
+        """Calculate Gini coefficient for inequality measurement"""
+        try:
+            # Convert to numpy array and handle various input types
+            if hasattr(values, 'values'):
+                values = values.values
+            
+            values = np.array(values, dtype=float)
+            values = values[~np.isnan(values)]  # Remove NaN values
+            
+            if len(values) <= 1:
+                return 0.0
+            
+            values = np.sort(values)
+            n = len(values)
+            
+            if np.sum(values) == 0:
+                return 0.0
+            
+            index = np.arange(1, n + 1)
+            return float((2 * np.sum(index * values)) / (n * np.sum(values)) - (n + 1) / n)
+        except Exception as e:
+            return 0.0
+    
+    def _classify_effect_size(self, effect_size: float) -> str:
+        """Classify effect size (Cohen's d)"""
+        abs_effect = abs(effect_size)
+        if abs_effect >= 0.8:
             return 'large'
-        elif abs_cohens_d >= thresholds['medium']:
+        elif abs_effect >= 0.5:
             return 'medium'
-        elif abs_cohens_d >= thresholds['small']:
+        elif abs_effect >= 0.2:
             return 'small'
         else:
             return 'negligible'
-
-    def _generate_test_conclusion(self, groups: List, variable: str, p_value: float, cohens_d: float) -> str:
-        """Generate human-readable conclusion for hypothesis test"""
-        
-        significance = "significant" if p_value < self.significance_alpha else "not significant"
-        direction = "higher" if cohens_d > 0 else "lower"
-        effect_magnitude = self._interpret_effect_size(abs(cohens_d))
-        
-        if p_value < self.significance_alpha:
-            return f"There is a statistically {significance} difference in {variable} between {groups[0]} and {groups[1]}. {groups[0]} has {direction} values with a {effect_magnitude} effect size (p={p_value:.3f}, d={cohens_d:.3f})."
-        else:
-            return f"No statistically significant difference found in {variable} between {groups[0]} and {groups[1]} (p={p_value:.3f})."
-
-    async def _assess_analysis_quality(self, analysis_results: Dict, df: pd.DataFrame) -> Dict[str, Any]:
-        """Assess the quality and reliability of the analysis"""
-        
-        quality_assessment = {
-            'data_adequacy': {
-                'sample_size': len(df),
-                'sample_size_adequate': len(df) >= self.min_sample_size,
-                'missing_data_impact': df.isnull().sum().sum() / (len(df) * len(df.columns)),
-                'data_completeness': 1 - (df.isnull().sum().sum() / (len(df) * len(df.columns)))
-            },
-            'analysis_coverage': {
-                'kpis_calculated': len(analysis_results.get('kpis', [])),
-                'trends_analyzed': len(analysis_results.get('trends', [])),
-                'correlations_found': len(analysis_results.get('correlations', [])),
-                'hypothesis_tests_run': len(analysis_results.get('hypothesis_tests', []))
-            },
-            'statistical_rigor': {
-                'significance_level_used': self.significance_alpha,
-                'minimum_sample_size': self.min_sample_size,
-                'effect_sizes_calculated': len([test for test in analysis_results.get('hypothesis_tests', []) if 'effect_size' in test])
-            }
-        }
-        
-        # Calculate overall analysis quality score
-        adequacy_score = 100 if quality_assessment['data_adequacy']['sample_size_adequate'] else 50
-        completeness_score = quality_assessment['data_adequacy']['data_completeness'] * 100
-        coverage_score = min(100, (quality_assessment['analysis_coverage']['kpis_calculated'] * 10))
-        
-        overall_score = (adequacy_score * 0.4 + completeness_score * 0.4 + coverage_score * 0.2)
-        
-        quality_assessment['overall_quality_score'] = round(overall_score, 1)
-        quality_assessment['quality_level'] = 'high' if overall_score >= 80 else 'medium' if overall_score >= 60 else 'low'
-        
-        return quality_assessment
-
-    async def _generate_summary_statistics(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Generate overall summary statistics for the dataset"""
-        
-        numeric_columns = df.select_dtypes(include=[np.number]).columns
-        categorical_columns = df.select_dtypes(include=['object', 'category']).columns
+    
+    async def _create_summary_statistics(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Create comprehensive summary statistics - FIXED METHOD SIGNATURE"""
         
         summary = {
             'dataset_overview': {
                 'total_rows': len(df),
                 'total_columns': len(df.columns),
-                'numeric_columns': len(numeric_columns),
-                'categorical_columns': len(categorical_columns),
-                'missing_values': int(df.isnull().sum().sum()),
-                'missing_percentage': float(df.isnull().sum().sum() / (len(df) * len(df.columns)) * 100)
+                'memory_usage_mb': float(df.memory_usage(deep=True).sum() / (1024 * 1024)),
+                'missing_data_percentage': float((df.isnull().sum().sum() / (len(df) * len(df.columns))) * 100),
+                'duplicate_rows': int(df.duplicated().sum())
             },
-            'numeric_summary': {},
-            'categorical_summary': {}
+            'column_summary': {
+                'numeric_columns': len(df.select_dtypes(include=[np.number]).columns),
+                'categorical_columns': len(df.select_dtypes(include=['object', 'category']).columns),
+                'datetime_columns': len(df.select_dtypes(include=['datetime64']).columns)
+            },
+            'data_quality': {
+                'completeness_score': float((1 - df.isnull().sum().sum() / (len(df) * len(df.columns))) * 100),
+                'columns_with_missing': len([col for col in df.columns if df[col].isnull().any()]),
+                'high_cardinality_columns': len([col for col in df.select_dtypes(include=['object']).columns 
+                                               if df[col].nunique() / len(df) > 0.8])
+            },
+            'basic_statistics': {}
         }
         
-        # Numeric summary
-        if len(numeric_columns) > 0:
-            numeric_data = df[numeric_columns]
-            summary['numeric_summary'] = {
-                'total_numeric_columns': len(numeric_columns),
-                'mean_values': {col: float(numeric_data[col].mean()) for col in numeric_columns if not numeric_data[col].isnull().all()},
-                'median_values': {col: float(numeric_data[col].median()) for col in numeric_columns if not numeric_data[col].isnull().all()},
-                'std_values': {col: float(numeric_data[col].std()) for col in numeric_columns if not numeric_data[col].isnull().all()},
-                'overall_statistics': {
-                    'mean_of_means': float(numeric_data.mean().mean()),
-                    'mean_of_medians': float(numeric_data.median().mean()),
-                    'average_std': float(numeric_data.std().mean())
-                }
-            }
-        
-        # Categorical summary
-        if len(categorical_columns) > 0:
-            summary['categorical_summary'] = {
-                'total_categorical_columns': len(categorical_columns),
-                'unique_value_counts': {col: int(df[col].nunique()) for col in categorical_columns},
-                'most_common_values': {
-                    col: df[col].value_counts().head(3).to_dict() 
-                    for col in categorical_columns if not df[col].isnull().all()
-                },
-                'average_unique_values': float(df[categorical_columns].nunique().mean())
-            }
+        # Add basic statistics for numeric columns
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            for col in numeric_cols[:5]:  # Limit to 5 columns
+                try:
+                    col_data = df[col].dropna()
+                    if len(col_data) > 0:
+                        summary['basic_statistics'][col] = {
+                            'count': int(len(col_data)),
+                            'mean': float(col_data.mean()),
+                            'median': float(col_data.median()),
+                            'std': float(col_data.std()),
+                            'min': float(col_data.min()),
+                            'max': float(col_data.max())
+                        }
+                except Exception as e:
+                    self.logger.warning(f"Failed to compute basic statistics for {col}: {e}")
         
         return summary
+    
+    # Helper methods
+    def _count_outliers_iqr(self, series: pd.Series) -> int:
+        """Count outliers using IQR method"""
+        try:
+            Q1 = series.quantile(0.25)
+            Q3 = series.quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            return int(((series < lower_bound) | (series > upper_bound)).sum())
+        except:
+            return 0
+    
+    def _count_outliers_zscore(self, series: pd.Series, threshold: float = 3.0) -> int:
+        """Count outliers using Z-score method"""
+        try:
+            z_scores = np.abs(stats.zscore(series))
+            return int((z_scores > threshold).sum())
+        except:
+            return 0
+    
+    def _test_normality(self, series: pd.Series) -> Dict[str, Any]:
+        """Test for normality of a series"""
+        try:
+            if len(series) < 20:
+                return {'test': 'sample_too_small', 'is_normal': False}
+            
+            stat, p_value = normaltest(series)
+            return {
+                'test': 'dangostino_pearson',
+                'statistic': float(stat),
+                'p_value': float(p_value),
+                'is_normal': p_value > 0.05
+            }
+        except:
+            return {'test': 'failed', 'is_normal': False}
+    
+    def _detect_seasonality(self, series: pd.Series) -> float:
+        """Basic seasonality detection using autocorrelation"""
+        try:
+            if len(series) < 24:  # Need sufficient data points
+                return 0.0
+            
+            # Calculate autocorrelation at various lags
+            max_lag = min(len(series) // 4, 12)
+            autocorrs = [series.autocorr(lag=lag) for lag in range(1, max_lag + 1)]
+            
+            # Return maximum absolute autocorrelation as seasonality score
+            return float(max(abs(ac) for ac in autocorrs if pd.notna(ac)))
+        except:
+            return 0.0
+    
+    def _calculate_effect_size(self, group1: pd.Series, group2: pd.Series) -> float:
+        """Calculate Cohen's d effect size"""
+        try:
+            mean_diff = group1.mean() - group2.mean()
+            pooled_std = np.sqrt(((len(group1) - 1) * group1.var() + (len(group2) - 1) * group2.var()) / 
+                               (len(group1) + len(group2) - 2))
+            
+            if pooled_std == 0:
+                return 0.0
+            
+            return float(mean_diff / pooled_std)
+        except:
+            return 0.0

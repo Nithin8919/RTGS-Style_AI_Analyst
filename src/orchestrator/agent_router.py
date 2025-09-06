@@ -377,12 +377,21 @@ class RTGSOrchestrator:
                 )
             )
             
+            # Handle case where LangGraph returns dict instead of PipelineState
+            if isinstance(final_state, dict):
+                # Convert dict back to PipelineState if needed
+                state_obj = PipelineState(run_manifest=self.run_manifest)
+                for key, value in final_state.items():
+                    if hasattr(state_obj, key):
+                        setattr(state_obj, key, value)
+                final_state = state_obj
+            
             # Determine overall confidence
             confidence = self._calculate_overall_confidence(final_state)
             
             # Extract key insights for CLI display
             key_insights = []
-            if final_state.insights:
+            if hasattr(final_state, 'insights') and final_state.insights:
                 insights_data = final_state.insights.get('key_findings', [])
                 key_insights = [finding['finding'] for finding in insights_data[:3]]
             
