@@ -215,6 +215,7 @@ Every run generates four key outputs inside `artifacts/reports/`:
 
 **Example Output Structure:**
 ```
+Each run generates you these 4 important ouputs reports in the artifacts reports folder
 artifacts/reports/rtgs-education-20250905-001/
 ├── 📋 enhanced_policy_insights.md           # Run metadata & parameters
 ├── 📝 enhanced_techinal_analysis.md                  # Full markdown report  
