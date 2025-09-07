@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 import re
+from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler
 
 from src.utils.logging import get_agent_logger, TransformLogger
 
@@ -27,9 +28,110 @@ class TransformationAgent:
         # Extract feature engineering config
         self.feature_config = self.config.get('feature_engineering', {})
         
+        # Transformation controls from config
+        self.transformation_controls = self.feature_config.get('transformation_controls', {
+            'enable_categorical_encoding': True,
+            'enable_numeric_scaling': True,
+            'enable_skew_handling': True,
+            'enable_datetime_features': True,
+            'enable_interaction_features': True,
+            'enable_missing_handling': True,
+            'auto_detect_requirements': True  # If True, only apply needed transformations
+        })
+        
+        # Initialize transformation tracking
+        self.transformations = []
+        self.encoders = {}
+        self.scalers = {}
+    
+    def reset_transformation_state(self):
+        """Reset transformation tracking for new run"""
+        self.transformations = []
+        self.encoders = {}
+        self.scalers = {}
+    
+    def analyze_data_requirements(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze data to determine which transformations are needed"""
+        analysis = {
+            'needs_categorical_encoding': False,
+            'needs_numeric_scaling': False,
+            'needs_skew_handling': False,
+            'needs_datetime_features': False,
+            'needs_interaction_features': False,
+            'needs_missing_handling': False,
+            'categorical_cols': [],
+            'skewed_cols': [],
+            'datetime_cols': [],
+            'high_variance_cols': [],
+            'missing_value_cols': []
+        }
+        
+        # Get thresholds from config
+        cat_config = self.transformation_controls.get('categorical_encoding', {})
+        num_config = self.transformation_controls.get('numeric_scaling', {})
+        skew_config = self.transformation_controls.get('skew_handling', {})
+        
+        min_cardinality = cat_config.get('min_cardinality', 2)
+        max_cardinality = cat_config.get('max_cardinality', 50)
+        variance_threshold = num_config.get('variance_threshold', 1000)
+        range_threshold = num_config.get('range_threshold', 10000)
+        skewness_threshold = skew_config.get('skewness_threshold', 2.0)
+        min_values = skew_config.get('min_values', 3)
+        
+        # Check for categorical variables that need encoding
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+        for col in categorical_cols:
+            unique_count = df[col].nunique()
+            if min_cardinality <= unique_count <= max_cardinality:
+                analysis['needs_categorical_encoding'] = True
+                analysis['categorical_cols'].append(col)
+        
+        # Check for numeric variables that need scaling
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if not col.endswith('_encoded'):  # Skip already encoded columns
+                std_val = df[col].std()
+                if std_val > variance_threshold or (df[col].max() - df[col].min()) > range_threshold:
+                    analysis['needs_numeric_scaling'] = True
+                    analysis['high_variance_cols'].append(col)
+        
+        # Check for skewed distributions
+        for col in numeric_cols:
+            if not col.endswith(('_encoded', '_std', '_norm')):
+                if df[col].notna().sum() >= min_values:
+                    skewness = abs(df[col].skew())
+                    if skewness > skewness_threshold:
+                        analysis['needs_skew_handling'] = True
+                        analysis['skewed_cols'].append(col)
+        
+        # Check for datetime columns
+        datetime_cols = df.select_dtypes(include=['datetime64']).columns
+        if len(datetime_cols) > 0:
+            analysis['needs_datetime_features'] = True
+            analysis['datetime_cols'] = list(datetime_cols)
+        
+        # Check for interaction opportunities
+        if len(numeric_cols) >= 2:
+            analysis['needs_interaction_features'] = True
+        
+        # Check for missing values in transformed columns
+        transformed_cols = [col for col in df.columns 
+                          if col.endswith(('_encoded', '_std', '_norm', '_log')) or 
+                             '_ratio' in col or any(dt_feature in col for dt_feature in ['_year', '_month', '_day'])]
+        
+        for col in transformed_cols:
+            if df[col].isnull().sum() > 0:
+                analysis['needs_missing_handling'] = True
+                analysis['missing_value_cols'].append(col)
+        
+        return analysis
+        
     async def process(self, state) -> Any:
         """Main transformation processing pipeline with robust error handling"""
         self.logger.info("Starting data transformation process")
+        
+        # Reset transformation state for new run
+        self.reset_transformation_state()
         
         try:
             # Initialize transform logger
@@ -119,6 +221,130 @@ class TransformationAgent:
                 if hasattr(state, 'warnings'):
                     state.warnings.append(f"Aggregation features creation failed: {str(e)}")
             
+            # Analyze data requirements for conditional transformations
+            data_analysis = self.analyze_data_requirements(transformed_data)
+            self.logger.info(f"Data analysis completed: {data_analysis}")
+            
+            # Apply robust data-agnostic transformations conditionally
+            if (self.transformation_controls['enable_categorical_encoding'] and 
+                (not self.transformation_controls['auto_detect_requirements'] or data_analysis['needs_categorical_encoding'])):
+                try:
+                    self.logger.info(f"Encoding categorical variables: {data_analysis['categorical_cols']}")
+                    transformed_data = self.encode_categorical_variables(transformed_data)
+                    transformation_log.append({
+                        'feature_type': 'categorical_encoding',
+                        'description': f"Applied categorical variable encoding to {len(data_analysis['categorical_cols'])} columns",
+                        'transformations_applied': len(self.transformations)
+                    })
+                except Exception as e:
+                    self.logger.warning(f"Categorical encoding failed: {str(e)}")
+                    if hasattr(state, 'warnings'):
+                        state.warnings.append(f"Categorical encoding failed: {str(e)}")
+            else:
+                self.logger.info("Skipping categorical encoding - not needed or disabled")
+            
+            if (self.transformation_controls['enable_numeric_scaling'] and 
+                (not self.transformation_controls['auto_detect_requirements'] or data_analysis['needs_numeric_scaling'])):
+                try:
+                    self.logger.info(f"Scaling numeric variables: {data_analysis['high_variance_cols']}")
+                    transformed_data = self.scale_numeric_variables(transformed_data)
+                    transformation_log.append({
+                        'feature_type': 'numeric_scaling',
+                        'description': f"Applied standard scaling to {len(data_analysis['high_variance_cols'])} high-variance columns",
+                        'transformations_applied': len(self.transformations)
+                    })
+                except Exception as e:
+                    self.logger.warning(f"Numeric scaling failed: {str(e)}")
+                    if hasattr(state, 'warnings'):
+                        state.warnings.append(f"Numeric scaling failed: {str(e)}")
+            else:
+                self.logger.info("Skipping numeric scaling - not needed or disabled")
+            
+            if (self.transformation_controls['enable_skew_handling'] and 
+                (not self.transformation_controls['auto_detect_requirements'] or data_analysis['needs_skew_handling'])):
+                try:
+                    self.logger.info(f"Handling skewed distributions: {data_analysis['skewed_cols']}")
+                    transformed_data = self.handle_skewed_distributions(transformed_data)
+                    transformation_log.append({
+                        'feature_type': 'skew_handling',
+                        'description': f"Applied log transformations to {len(data_analysis['skewed_cols'])} skewed columns",
+                        'transformations_applied': len(self.transformations)
+                    })
+                except Exception as e:
+                    self.logger.warning(f"Skew handling failed: {str(e)}")
+                    if hasattr(state, 'warnings'):
+                        state.warnings.append(f"Skew handling failed: {str(e)}")
+            else:
+                self.logger.info("Skipping skew handling - not needed or disabled")
+            
+            if (self.transformation_controls['enable_datetime_features'] and 
+                (not self.transformation_controls['auto_detect_requirements'] or data_analysis['needs_datetime_features'])):
+                try:
+                    self.logger.info(f"Creating datetime features: {data_analysis['datetime_cols']}")
+                    transformed_data = self.create_datetime_features(transformed_data)
+                    transformation_log.append({
+                        'feature_type': 'datetime_features',
+                        'description': f"Created datetime features from {len(data_analysis['datetime_cols'])} datetime columns",
+                        'transformations_applied': len(self.transformations)
+                    })
+                except Exception as e:
+                    self.logger.warning(f"Datetime features creation failed: {str(e)}")
+                    if hasattr(state, 'warnings'):
+                        state.warnings.append(f"Datetime features creation failed: {str(e)}")
+            else:
+                self.logger.info("Skipping datetime features - not needed or disabled")
+            
+            if (self.transformation_controls['enable_interaction_features'] and 
+                (not self.transformation_controls['auto_detect_requirements'] or data_analysis['needs_interaction_features'])):
+                try:
+                    self.logger.info("Creating interaction features...")
+                    transformed_data = self.create_interaction_features(transformed_data)
+                    transformation_log.append({
+                        'feature_type': 'interaction_features',
+                        'description': "Created interaction features between numeric variables",
+                        'transformations_applied': len(self.transformations)
+                    })
+                except Exception as e:
+                    self.logger.warning(f"Interaction features creation failed: {str(e)}")
+                    if hasattr(state, 'warnings'):
+                        state.warnings.append(f"Interaction features creation failed: {str(e)}")
+            else:
+                self.logger.info("Skipping interaction features - not needed or disabled")
+            
+            if (self.transformation_controls['enable_missing_handling'] and 
+                (not self.transformation_controls['auto_detect_requirements'] or data_analysis['needs_missing_handling'])):
+                try:
+                    self.logger.info(f"Handling missing values: {data_analysis['missing_value_cols']}")
+                    transformed_data = self.handle_missing_after_transformation(transformed_data)
+                    transformation_log.append({
+                        'feature_type': 'missing_value_handling',
+                        'description': f"Handled missing values in {len(data_analysis['missing_value_cols'])} transformed columns",
+                        'transformations_applied': len(self.transformations)
+                    })
+                except Exception as e:
+                    self.logger.warning(f"Missing value handling failed: {str(e)}")
+                    if hasattr(state, 'warnings'):
+                        state.warnings.append(f"Missing value handling failed: {str(e)}")
+            else:
+                self.logger.info("Skipping missing value handling - not needed or disabled")
+            
+            # Validate transformations
+            try:
+                self.logger.info("Validating transformations...")
+                validation_results = self.validate_transformations(input_data, transformed_data)
+                if not validation_results['is_valid']:
+                    self.logger.warning(f"Transformation validation failed: {validation_results['issues']}")
+                    if hasattr(state, 'warnings'):
+                        state.warnings.extend(validation_results['issues'])
+                if validation_results['warnings']:
+                    self.logger.warning(f"Transformation warnings: {validation_results['warnings']}")
+                    if hasattr(state, 'warnings'):
+                        state.warnings.extend(validation_results['warnings'])
+            except Exception as e:
+                self.logger.warning(f"Transformation validation failed: {str(e)}")
+                if hasattr(state, 'warnings'):
+                    state.warnings.append(f"Transformation validation failed: {str(e)}")
+            
             # Create feature catalog
             try:
                 feature_catalog = await self._create_feature_catalog(transformed_data, input_data, transformation_log)
@@ -160,16 +386,35 @@ class TransformationAgent:
             state.feature_catalog = feature_catalog
             state.transformation_log = transformation_log
             state.data_source_used = data_source
+            state.transformation_summary = self.get_transformation_summary()
+            state.data_analysis = data_analysis
             
             # Initialize warnings list if it doesn't exist
             if not hasattr(state, 'warnings'):
                 state.warnings = []
             
+            # Count applied transformations
+            applied_transformations = []
+            if data_analysis['needs_categorical_encoding'] and self.transformation_controls['enable_categorical_encoding']:
+                applied_transformations.append(f"categorical encoding ({len(data_analysis['categorical_cols'])} cols)")
+            if data_analysis['needs_numeric_scaling'] and self.transformation_controls['enable_numeric_scaling']:
+                applied_transformations.append(f"numeric scaling ({len(data_analysis['high_variance_cols'])} cols)")
+            if data_analysis['needs_skew_handling'] and self.transformation_controls['enable_skew_handling']:
+                applied_transformations.append(f"skew handling ({len(data_analysis['skewed_cols'])} cols)")
+            if data_analysis['needs_datetime_features'] and self.transformation_controls['enable_datetime_features']:
+                applied_transformations.append(f"datetime features ({len(data_analysis['datetime_cols'])} cols)")
+            if data_analysis['needs_interaction_features'] and self.transformation_controls['enable_interaction_features']:
+                applied_transformations.append("interaction features")
+            if data_analysis['needs_missing_handling'] and self.transformation_controls['enable_missing_handling']:
+                applied_transformations.append(f"missing value handling ({len(data_analysis['missing_value_cols'])} cols)")
+            
             success_msg = f"Transformation completed: {len(transformed_data)} rows, {len(transformed_data.columns)} columns"
             feature_msg = f"Created {len(transformed_data.columns) - len(input_data.columns)} new features"
+            transformation_msg = f"Applied {len(self.transformations)} transformations: {', '.join(applied_transformations) if applied_transformations else 'none needed'}"
             
             self.logger.info(success_msg)
             self.logger.info(feature_msg)
+            self.logger.info(transformation_msg)
             
             return state
             
@@ -219,7 +464,7 @@ class TransformationAgent:
                 df[f"{col}_day"] = df[col].dt.day
                 df[f"{col}_dayofweek"] = df[col].dt.dayofweek
                 df[f"{col}_dayofyear"] = df[col].dt.dayofyear
-                df[f"{col}_weekofyear"] = df[col].dt.isocalendar().week
+                df[f"{col}_weekofyear"] = df[col].dt.isocalendar().week.astype('int64')
                 
                 # Create time flags
                 df[f"{col}_is_weekend"] = df[col].dt.dayofweek >= 5
@@ -496,6 +741,290 @@ class TransformationAgent:
         
         return df, log_entries
     
+    def encode_categorical_variables(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Encode categorical variables for analysis"""
+        df_transformed = df.copy()
+        
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+        
+        # Get thresholds from config
+        cat_config = self.transformation_controls.get('categorical_encoding', {})
+        min_cardinality = cat_config.get('min_cardinality', 2)
+        max_cardinality = cat_config.get('max_cardinality', 50)
+        
+        self.logger.info(f"Encoding {len(categorical_cols)} categorical columns...")
+        
+        for col in categorical_cols:
+            unique_count = df[col].nunique()
+            
+            # Skip if outside cardinality range
+            if unique_count < min_cardinality or unique_count > max_cardinality:
+                self.logger.warning(f"Skipping encoding for '{col}' - cardinality {unique_count} outside range [{min_cardinality}, {max_cardinality}]")
+                continue
+            
+            # For binary categorical variables
+            if unique_count == 2:
+                # Simple binary encoding
+                unique_values = df[col].dropna().unique()
+                if len(unique_values) == 2:
+                    df_transformed[f'{col}_encoded'] = df_transformed[col].map({
+                        unique_values[0]: 0,
+                        unique_values[1]: 1
+                    })
+                    self.transformations.append(f"Binary encoded '{col}' -> '{col}_encoded'")
+                    self.logger.info(f"Binary encoded column '{col}'")
+            
+            # For low cardinality categorical variables (<=10 categories)
+            elif unique_count <= 10:
+                # One-hot encoding
+                dummies = pd.get_dummies(df_transformed[col], prefix=col, dummy_na=True)
+                df_transformed = pd.concat([df_transformed, dummies], axis=1)
+                self.transformations.append(f"One-hot encoded '{col}' into {len(dummies.columns)} dummy variables")
+                self.logger.info(f"One-hot encoded column '{col}' into {len(dummies.columns)} columns")
+            
+            # For medium cardinality (11-50 categories)
+            else:
+                # Label encoding
+                le = LabelEncoder()
+                non_null_mask = df_transformed[col].notna()
+                df_transformed.loc[non_null_mask, f'{col}_encoded'] = le.fit_transform(
+                    df_transformed.loc[non_null_mask, col]
+                )
+                self.encoders[col] = le
+                self.transformations.append(f"Label encoded '{col}' -> '{col}_encoded'")
+                self.logger.info(f"Label encoded column '{col}'")
+        
+        return df_transformed
+    
+    def scale_numeric_variables(self, df: pd.DataFrame, method: str = None) -> pd.DataFrame:
+        """Scale numeric variables"""
+        df_transformed = df.copy()
+        
+        # Get method from config if not provided
+        if method is None:
+            num_config = self.transformation_controls.get('numeric_scaling', {})
+            method = num_config.get('method', 'standard')
+        
+        # Get numeric columns (excluding encoded columns)
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        numeric_cols = [col for col in numeric_cols if not col.endswith('_encoded')]
+        
+        if len(numeric_cols) == 0:
+            self.logger.info("No numeric columns to scale")
+            return df_transformed
+        
+        self.logger.info(f"Scaling {len(numeric_cols)} numeric columns using {method} scaling...")
+        
+        # Choose scaler
+        if method == 'standard':
+            scaler = StandardScaler()
+            suffix = '_std'
+        elif method == 'minmax':
+            scaler = MinMaxScaler()
+            suffix = '_norm'
+        else:
+            self.logger.warning(f"Unknown scaling method: {method}, using standard scaling")
+            scaler = StandardScaler()
+            suffix = '_std'
+        
+        # Apply scaling
+        for col in numeric_cols:
+            if df[col].notna().sum() > 0:  # Only scale if we have non-null values
+                non_null_mask = df_transformed[col].notna()
+                scaled_values = scaler.fit_transform(df_transformed.loc[non_null_mask, [col]])
+                df_transformed.loc[non_null_mask, f'{col}{suffix}'] = scaled_values.ravel()
+                
+                self.scalers[col] = scaler
+                self.transformations.append(f"Applied {method} scaling to '{col}' -> '{col}{suffix}'")
+                self.logger.info(f"Scaled column '{col}' using {method} scaling")
+        
+        return df_transformed
+    
+    def handle_skewed_distributions(self, df: pd.DataFrame, skewness_threshold: float = None) -> pd.DataFrame:
+        """Apply log transformation to highly skewed numeric variables"""
+        df_transformed = df.copy()
+        
+        # Get thresholds from config if not provided
+        if skewness_threshold is None:
+            skew_config = self.transformation_controls.get('skew_handling', {})
+            skewness_threshold = skew_config.get('skewness_threshold', 2.0)
+            min_values = skew_config.get('min_values', 3)
+        else:
+            min_values = 3
+        
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        numeric_cols = [col for col in numeric_cols if not col.endswith(('_encoded', '_std', '_norm'))]
+        
+        self.logger.info(f"Checking skewness for {len(numeric_cols)} numeric columns...")
+        
+        for col in numeric_cols:
+            if df[col].notna().sum() < min_values:  # Need at least min_values
+                continue
+                
+            # Calculate skewness
+            skewness = df[col].skew()
+            
+            if abs(skewness) > skewness_threshold:
+                # Apply log transformation (add 1 to handle zeros)
+                if df[col].min() >= 0:  # Only for non-negative values
+                    df_transformed[f'{col}_log'] = np.log1p(df_transformed[col])
+                    self.transformations.append(f"Applied log transformation to '{col}' (skewness: {skewness:.2f}) -> '{col}_log'")
+                    self.logger.info(f"Applied log transformation to '{col}' (skewness: {skewness:.2f})")
+                else:
+                    self.logger.warning(f"Skipped log transformation for '{col}' - contains negative values")
+        
+        return df_transformed
+    
+    def create_datetime_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Extract features from datetime columns"""
+        df_transformed = df.copy()
+        
+        datetime_cols = df.select_dtypes(include=['datetime64']).columns
+        
+        if len(datetime_cols) == 0:
+            return df_transformed
+        
+        self.logger.info(f"Creating datetime features for {len(datetime_cols)} columns...")
+        
+        for col in datetime_cols:
+            if df[col].notna().sum() == 0:
+                continue
+            
+            # Extract common datetime features
+            df_transformed[f'{col}_year'] = df_transformed[col].dt.year
+            df_transformed[f'{col}_month'] = df_transformed[col].dt.month
+            df_transformed[f'{col}_day'] = df_transformed[col].dt.day
+            df_transformed[f'{col}_dayofweek'] = df_transformed[col].dt.dayofweek
+            df_transformed[f'{col}_quarter'] = df_transformed[col].dt.quarter
+            
+            # Create binary features for common patterns
+            df_transformed[f'{col}_is_weekend'] = df_transformed[f'{col}_dayofweek'].isin([5, 6]).astype(int)
+            df_transformed[f'{col}_is_month_start'] = df_transformed[col].dt.is_month_start.astype(int)
+            df_transformed[f'{col}_is_month_end'] = df_transformed[col].dt.is_month_end.astype(int)
+            
+            features_created = 8
+            self.transformations.append(f"Created {features_created} datetime features from '{col}'")
+            self.logger.info(f"Created {features_created} datetime features from '{col}'")
+        
+        return df_transformed
+    
+    def create_interaction_features(self, df: pd.DataFrame, max_interactions: int = None) -> pd.DataFrame:
+        """Create simple interaction features between numeric variables"""
+        df_transformed = df.copy()
+        
+        # Get max_interactions from config if not provided
+        if max_interactions is None:
+            interaction_config = self.transformation_controls.get('interaction_features', {})
+            max_interactions = interaction_config.get('max_interactions', 5)
+            min_numeric_cols = interaction_config.get('min_numeric_cols', 2)
+        else:
+            min_numeric_cols = 2
+        
+        # Get original numeric columns (not transformed ones)
+        numeric_cols = [col for col in df.select_dtypes(include=[np.number]).columns 
+                       if not col.endswith(('_encoded', '_std', '_norm', '_log'))]
+        
+        if len(numeric_cols) < min_numeric_cols:
+            self.logger.info(f"Not enough numeric columns for interaction features (need {min_numeric_cols}, have {len(numeric_cols)})")
+            return df_transformed
+        
+        self.logger.info("Creating interaction features...")
+        
+        interactions_created = 0
+        for i, col1 in enumerate(numeric_cols):
+            if interactions_created >= max_interactions:
+                break
+            for j, col2 in enumerate(numeric_cols[i+1:], i+1):
+                if interactions_created >= max_interactions:
+                    break
+                
+                # Create ratio feature
+                col2_nonzero = df_transformed[col2] != 0
+                if col2_nonzero.sum() > 0:
+                    df_transformed[f'{col1}_{col2}_ratio'] = df_transformed[col1] / df_transformed[col2].where(col2_nonzero, np.nan)
+                    interactions_created += 1
+                    self.transformations.append(f"Created ratio feature '{col1}_{col2}_ratio'")
+                
+                if interactions_created >= max_interactions:
+                    break
+        
+        self.logger.info(f"Created {interactions_created} interaction features")
+        return df_transformed
+    
+    def handle_missing_after_transformation(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Handle any missing values created during transformation"""
+        df_transformed = df.copy()
+        
+        # Check for new missing values in transformed columns
+        transformed_cols = [col for col in df_transformed.columns 
+                          if col.endswith(('_encoded', '_std', '_norm', '_log')) or 
+                             '_ratio' in col or any(dt_feature in col for dt_feature in ['_year', '_month', '_day'])]
+        
+        for col in transformed_cols:
+            missing_count = df_transformed[col].isnull().sum()
+            if missing_count > 0:
+                if pd.api.types.is_numeric_dtype(df_transformed[col]):
+                    # Fill with median for numeric
+                    median_val = df_transformed[col].median()
+                    df_transformed[col] = df_transformed[col].fillna(median_val)
+                    self.transformations.append(f"Filled {missing_count} missing values in '{col}' with median")
+                else:
+                    # Fill with mode for categorical
+                    mode_val = df_transformed[col].mode().iloc[0] if not df_transformed[col].mode().empty else 0
+                    df_transformed[col] = df_transformed[col].fillna(mode_val)
+                    self.transformations.append(f"Filled {missing_count} missing values in '{col}' with mode")
+        
+        return df_transformed
+    
+    def validate_transformations(self, df_original: pd.DataFrame, df_transformed: pd.DataFrame) -> Dict[str, Any]:
+        """Validate transformation results"""
+        validation = {
+            'is_valid': True,
+            'issues': [],
+            'warnings': [],
+            'summary': {}
+        }
+        
+        # Check if we created too many columns
+        original_cols = df_original.shape[1]
+        transformed_cols = df_transformed.shape[1]
+        new_cols = transformed_cols - original_cols
+        
+        validation['summary'] = {
+            'original_columns': original_cols,
+            'transformed_columns': transformed_cols,
+            'new_columns_created': new_cols,
+            'transformations_applied': len(self.transformations)
+        }
+        
+        if new_cols > original_cols * 2:  # More than double the columns
+            validation['warnings'].append(f"Created many new columns ({new_cols}), consider feature selection")
+        
+        # Check for infinite values
+        numeric_cols = df_transformed.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if np.isinf(df_transformed[col]).any():
+                validation['issues'].append(f"Column '{col}' contains infinite values")
+                validation['is_valid'] = False
+        
+        # Check for extremely large values (potential overflow)
+        for col in numeric_cols:
+            if df_transformed[col].abs().max() > 1e10:
+                validation['warnings'].append(f"Column '{col}' has very large values")
+        
+        return validation
+    
+    def get_transformation_summary(self) -> Dict[str, Any]:
+        """Get summary of transformations applied"""
+        return {
+            'total_transformations': len(self.transformations),
+            'encoders_created': len(self.encoders),
+            'scalers_created': len(self.scalers),
+            'transformation_details': self.transformations,
+            'encoder_columns': list(self.encoders.keys()),
+            'scaler_columns': list(self.scalers.keys())
+        }
+    
     async def _create_feature_catalog(self, transformed_data: pd.DataFrame, 
                                     original_data: pd.DataFrame, 
                                     transformation_log: List[Dict]) -> Dict[str, Any]:
@@ -540,7 +1069,13 @@ class TransformationAgent:
                     "per_capita_features": feature_counts.get('per_capita', 0),
                     "ratio_features": feature_counts.get('ratio', 0),
                     "trend_features": feature_counts.get('trend', 0),
-                    "aggregation_features": feature_counts.get('aggregation', 0)
+                    "aggregation_features": feature_counts.get('aggregation', 0),
+                    "categorical_encoding": feature_counts.get('categorical_encoding', 0),
+                    "numeric_scaling": feature_counts.get('numeric_scaling', 0),
+                    "skew_handling": feature_counts.get('skew_handling', 0),
+                    "datetime_features": feature_counts.get('datetime_features', 0),
+                    "interaction_features": feature_counts.get('interaction_features', 0),
+                    "missing_value_handling": feature_counts.get('missing_value_handling', 0)
                 }
             },
             "feature_importance": dict(sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)),

@@ -120,6 +120,9 @@ jupyter>=1.0.0
 ipython>=8.0.0
 pre-commit>=3.0.0
 
+
+multipart
+
 # Note: Some packages might need specific versions based on compatibility
 # Run: pip install -r requirements.txt
 # For development: pip install -r requirements.txt[dev]

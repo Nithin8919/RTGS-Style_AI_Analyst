@@ -159,6 +159,37 @@ feature_engineering:
   
   # Quantile buckets
   quantile_buckets: [3, 5, 10]  # tertiles, quintiles, deciles
+  
+  # Transformation Controls - Enable/disable specific transformations
+  transformation_controls:
+    # Auto-detect requirements and only apply needed transformations
+    auto_detect_requirements: true
+    
+    # Individual transformation controls
+    enable_categorical_encoding: true    # Binary, one-hot, label encoding
+    enable_numeric_scaling: true         # Standard/minmax scaling
+    enable_skew_handling: true           # Log transformations for skewed data
+    enable_datetime_features: true       # Extract datetime components
+    enable_interaction_features: true    # Create ratio/interaction features
+    enable_missing_handling: true        # Handle missing values after transformation
+    
+    # Transformation thresholds
+    categorical_encoding:
+      max_cardinality: 50                # Skip encoding if >50 unique values
+      min_cardinality: 2                 # Skip if <2 unique values
+      
+    numeric_scaling:
+      variance_threshold: 1000           # Scale if std > threshold
+      range_threshold: 10000             # Scale if range > threshold
+      method: "standard"                 # standard, minmax
+      
+    skew_handling:
+      skewness_threshold: 2.0            # Apply log transform if |skew| > threshold
+      min_values: 3                      # Need at least N values for skewness calc
+      
+    interaction_features:
+      max_interactions: 5                # Limit number of interaction features
+      min_numeric_cols: 2                # Need at least N numeric columns
 
 # Insight Generation
 insights:

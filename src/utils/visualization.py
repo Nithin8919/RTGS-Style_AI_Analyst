@@ -908,6 +908,57 @@ class GovernmentDataVisualizer:
         
         return str(filepath)
 
+    def save_figures_to_pdf_with_content(self, figures: List[plt.Figure], filename: str, 
+                                        metadata: Dict = None, markdown_content: str = None) -> str:
+        """Save figures to PDF with markdown content included as text pages"""
+        
+        filepath = Path(filename)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        
+        with PdfPages(str(filepath)) as pdf:
+            # Add markdown content as text pages first
+            if markdown_content:
+                # Split markdown content into pages
+                lines = markdown_content.split('\n')
+                page_lines = []
+                current_page = []
+                
+                for line in lines:
+                    current_page.append(line)
+                    if len(current_page) >= 50:  # Approximate lines per page
+                        page_lines.append('\n'.join(current_page))
+                        current_page = []
+                
+                if current_page:
+                    page_lines.append('\n'.join(current_page))
+                
+                # Create text pages
+                for page_content in page_lines:
+                    fig, ax = plt.subplots(figsize=(8.5, 11))  # Letter size
+                    ax.axis('off')
+                    ax.text(0.05, 0.95, page_content, transform=ax.transAxes, 
+                           fontsize=10, verticalalignment='top', fontfamily='monospace',
+                           wrap=True)
+                    pdf.savefig(fig, bbox_inches='tight', dpi=300)
+                    plt.close(fig)
+            
+            # Add all figures
+            for fig in figures:
+                if fig is not None:
+                    pdf.savefig(fig, bbox_inches='tight', dpi=300)
+                    plt.close(fig)  # Free memory
+            
+            # Add metadata if provided
+            if metadata:
+                d = pdf.infodict()
+                d['Title'] = metadata.get('title', 'RTGS AI Analyst Report')
+                d['Author'] = metadata.get('author', 'RTGS AI Analyst System')
+                d['Subject'] = metadata.get('subject', 'Government Data Analysis Report')
+                d['Keywords'] = metadata.get('keywords', 'Government, Data Analysis, Policy')
+                d['Creator'] = 'RTGS AI Analyst'
+        
+        return str(filepath)
+
     def create_summary_statistics_table(self, df: pd.DataFrame) -> plt.Figure:
         """Create a comprehensive summary statistics table"""
         

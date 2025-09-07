@@ -60,6 +60,9 @@ class AnalysisAgent:
             
             self.logger.info(f"Analyzing dataset: {len(input_data)} rows × {len(input_data.columns)} columns")
             
+            # Clean data types to prevent analysis errors
+            input_data = self._clean_data_types(input_data)
+            
             # Perform analysis with individual error handling
             analysis_results = {
                 'analysis_metadata': {
@@ -210,7 +213,7 @@ class AnalysisAgent:
                 'complete_rows': len(df.dropna()),
                 'complete_rows_percentage': (len(df.dropna()) / len(df)) * 100
             },
-            'data_quality_flags': await self._assess_data_quality_flags(df)
+            'data_quality_flags': self._assess_data_quality_flags(df)
         }
         
         return profile
@@ -288,10 +291,10 @@ class AnalysisAgent:
         time_cols = [col for col in df.columns if 'year' in col.lower() or 'date' in col.lower() or 'time' in col.lower()]
         
         if time_cols:
-            kpis['time_series_summary'] = await self._compute_time_series_kpis(df, time_cols)
+            kpis['time_series_summary'] = self._compute_time_series_kpis(df, time_cols)
         
         # Top performers analysis
-        kpis['top_performers'] = await self._identify_top_performers(df)
+        kpis['top_performers'] = self._identify_top_performers(df)
         
         return kpis
     
@@ -307,7 +310,7 @@ class AnalysisAgent:
         
         # Find time columns
         time_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in ['year', 'month', 'date', 'time'])]
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = self._filter_numeric_columns(df)
         
         if not time_cols or not numeric_cols:
             return trends
@@ -376,7 +379,7 @@ class AnalysisAgent:
                     
                     # Seasonal pattern detection (if enough data points)
                     if len(valid_data) >= 12:  # Need at least 12 points for seasonal analysis
-                        seasonal_analysis = await self._detect_seasonality(valid_data[metric_col])
+                        seasonal_analysis = self._detect_seasonality(valid_data[metric_col])
                         if seasonal_analysis:
                             trends['seasonal_patterns'][metric_col] = seasonal_analysis
                     
@@ -399,7 +402,7 @@ class AnalysisAgent:
             'strong_correlations': []
         }
         
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = self._filter_numeric_columns(df)
         
         if len(numeric_cols) < 2:
             return correlations
@@ -409,12 +412,12 @@ class AnalysisAgent:
             clean_numeric_cols = []
             for col in numeric_cols:
                 col_data = df[col].dropna()
-                if len(col_data) > 1 and col_data.nunique() > 1:
+                if len(col_data) > 1 and col_data.nunique() > 1 and self._is_numeric_safe(df[col]):
                     clean_numeric_cols.append(col)
-            
+
             if len(clean_numeric_cols) < 2:
                 return correlations
-            
+
             # Compute correlation matrices
             df_clean = df[clean_numeric_cols].dropna()
             
@@ -530,7 +533,7 @@ class AnalysisAgent:
             'test_summary': {}
         }
         
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = self._filter_numeric_columns(df)
         categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
         
         # Group comparison tests
@@ -709,7 +712,7 @@ class AnalysisAgent:
         
         # Use primary geographic column
         primary_geo_col = geo_cols[0]
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = self._filter_numeric_columns(df)
         
         try:
             # Spatial distribution analysis
@@ -793,7 +796,7 @@ class AnalysisAgent:
             'skewness_analysis': {}
         }
         
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = self._filter_numeric_columns(df)
         
         for col in numeric_cols[:10]:  # Limit to 10 columns
             try:
@@ -873,7 +876,7 @@ class AnalysisAgent:
             'outlier_impact': {}
         }
         
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = self._filter_numeric_columns(df)
         
         for col in numeric_cols[:10]:  # Limit to 10 columns
             try:
@@ -1048,7 +1051,7 @@ class AnalysisAgent:
         
         return summary
     
-    async def _assess_data_quality_flags(self, df: pd.DataFrame) -> List[str]:
+    def _assess_data_quality_flags(self, df: pd.DataFrame) -> List[str]:
         """Assess data quality and return list of issues/flags"""
         flags = []
         
@@ -1083,7 +1086,7 @@ class AnalysisAgent:
         
         return flags
     
-    async def _identify_top_performers(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def _identify_top_performers(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Identify top performing entities based on key metrics"""
         top_performers = {
             'analysis_method': 'Multi-metric scoring',
@@ -1111,7 +1114,7 @@ class AnalysisAgent:
             top_performers['ranking_criteria'].append(f'Grouped by {entity_col}')
             
             # Find numeric performance metrics
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            numeric_cols = self._filter_numeric_columns(df)
             
             # Remove outlier flag columns and utility columns
             performance_cols = [col for col in numeric_cols 
@@ -1326,20 +1329,33 @@ class AnalysisAgent:
         except:
             return {'test': 'failed', 'is_normal': False}
     
-    def _detect_seasonality(self, series: pd.Series) -> float:
+    def _detect_seasonality(self, series: pd.Series) -> Dict[str, Any]:
         """Basic seasonality detection using autocorrelation"""
         try:
-            if len(series) < 24:  # Need sufficient data points
-                return 0.0
+            if len(series) < 24:
+                return {'seasonality_score': 0.0, 'note': 'insufficient_data'}
             
             # Calculate autocorrelation at various lags
             max_lag = min(len(series) // 4, 12)
-            autocorrs = [series.autocorr(lag=lag) for lag in range(1, max_lag + 1)]
+            autocorrs = []
+            for lag in range(1, max_lag + 1):
+                try:
+                    autocorr = series.autocorr(lag=lag)
+                    if pd.notna(autocorr):
+                        autocorrs.append(abs(autocorr))
+                except:
+                    continue
             
-            # Return maximum absolute autocorrelation as seasonality score
-            return float(max(abs(ac) for ac in autocorrs if pd.notna(ac)))
-        except:
-            return 0.0
+            if not autocorrs:
+                return {'seasonality_score': 0.0, 'note': 'autocorr_failed'}
+            
+            return {
+                'seasonality_score': float(max(autocorrs)),
+                'max_lag': max_lag,
+                'significant_lags': len([ac for ac in autocorrs if ac > 0.3])
+            }
+        except Exception as e:
+            return {'seasonality_score': 0.0, 'error': str(e)}
     
     def _calculate_effect_size(self, group1: pd.Series, group2: pd.Series) -> float:
         """Calculate Cohen's d effect size"""
@@ -1354,3 +1370,89 @@ class AnalysisAgent:
             return float(mean_diff / pooled_std)
         except:
             return 0.0
+
+    def _compute_time_series_kpis(self, df: pd.DataFrame, time_cols: List[str]) -> Dict[str, Any]:
+        """Compute time series specific KPIs"""
+        time_kpis = {}
+        
+        for time_col in time_cols:
+            try:
+                if time_col in df.columns:
+                    series = df[time_col].dropna()
+                    time_kpis[time_col] = {
+                        'unique_periods': len(series.unique()),
+                        'date_range': {
+                            'start': str(series.min()),
+                            'end': str(series.max())
+                        },
+                        'missing_count': df[time_col].isnull().sum()
+                    }
+            except Exception as e:
+                self.logger.warning(f"Time series KPI failed for {time_col}: {e}")
+        
+        return time_kpis
+
+    def _is_numeric_safe(self, series: pd.Series) -> bool:
+        """Check if series can be safely used in numeric operations"""
+        try:
+            if series.dtype in ['object', 'string']:
+                return False
+            if hasattr(series.dtype, 'dtype') and series.dtype.dtype == 'object':
+                return False
+            return pd.api.types.is_numeric_dtype(series)
+        except:
+            return False
+
+    def _filter_numeric_columns(self, df: pd.DataFrame) -> List[str]:
+        """Get truly numeric columns, excluding problematic ones"""
+        numeric_cols = []
+        for col in df.select_dtypes(include=[np.number]).columns:
+            try:
+                # Skip problematic columns
+                if any(skip_word in col.lower() for skip_word in ['weekofyear', '_flag', '_id']):
+                    continue
+                
+                series = df[col].dropna()
+                if len(series) > 0:
+                    # Test basic operations
+                    _ = float(series.iloc[0])
+                    _ = series.mean()
+                    _ = series.std()
+                    numeric_cols.append(col)
+            except Exception as e:
+                self.logger.warning(f"Excluding {col} from numeric analysis: {e}")
+                continue
+        return numeric_cols
+
+    def _clean_data_types(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean and standardize data types to prevent analysis errors"""
+        df_clean = df.copy()
+        
+        for col in df_clean.columns:
+            try:
+                # Skip if already numeric and working
+                if pd.api.types.is_numeric_dtype(df_clean[col]) and not df_clean[col].dtype == 'object':
+                    continue
+                    
+                # Fix object columns that should be numeric
+                if df_clean[col].dtype == 'object':
+                    # Special handling for week/date columns
+                    if 'week' in col.lower() or 'day' in col.lower() or 'month' in col.lower() or 'year' in col.lower():
+                        numeric_converted = pd.to_numeric(df_clean[col], errors='coerce')
+                        if not numeric_converted.isna().all():
+                            df_clean[col] = numeric_converted
+                            self.logger.info(f"Converted {col} from object to numeric")
+                            continue
+                    
+                    # Try general numeric conversion
+                    numeric_converted = pd.to_numeric(df_clean[col], errors='coerce')
+                    if not numeric_converted.isna().all():
+                        non_null_ratio = numeric_converted.notna().sum() / len(df_clean)
+                        if non_null_ratio > 0.7:  # If 70%+ can be converted
+                            df_clean[col] = numeric_converted
+                            self.logger.info(f"Converted {col} from object to numeric")
+                    
+            except Exception as e:
+                self.logger.warning(f"Could not clean data type for column {col}: {e}")
+        
+        return df_clean
