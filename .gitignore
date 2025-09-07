@@ -6,9 +6,6 @@ __pycache__/
 # C extensions
 *.so
 
-data
-data/
-artifacts/
 # Distribution / packaging
 .Python
 build/
@@ -131,14 +128,7 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# RTGS AI Analyst specific
-# Data directories - completely ignore all data content
-data/
-!data/.gitkeep
 
-# Artifacts - completely ignore all generated content
-artifacts/
-!artifacts/.gitkeep
 
 # Configuration files with secrets
 .env
@@ -213,8 +203,8 @@ htmlcov/
 
 # Report and visualization files
 *.html
-*.pdf
-*.png
+
+
 *.jpg
 *.jpeg
 *.gif
