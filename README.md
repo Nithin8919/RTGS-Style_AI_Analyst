@@ -216,13 +216,11 @@ Every run generates four key outputs inside `artifacts/reports/`:
 **Example Output Structure:**
 ```
 artifacts/reports/rtgs-education-20250905-001/
-├── 📋 run_manifest.json           # Run metadata & parameters
-├── 📝 report.md                   # Full markdown report  
-├── 📄 report.pdf                  # PDF version
-├── 📊 plots/                      # Static PNG charts
-│   ├── enrollment_trends.png      # Time series analysis
-│   ├── district_comparison.png    # Geographic analysis
-│   └── correlation_matrix.png     # Statistical relationships
+├── 📋 enhanced_policy_insights.md           # Run metadata & parameters
+├── 📝 enhanced_techinal_analysis.md                  # Full markdown report  
+├── 📄 techincal_anlysisr.pdf    
+├── 📄 enhanced_policy_insights(Graphical DATA).pdf              # PDF version
+
 ├── 📁 data/                       # Processed datasets
 │   ├── raw_sample.csv             # Original data sample
 │   ├── standardized.csv           # Post-standardization  
@@ -230,8 +228,7 @@ artifacts/reports/rtgs-education-20250905-001/
 │   └── transformed.csv            # Analysis-ready final dataset
 └── 📋 logs/                       # Audit trail
     ├── transform_log.jsonl        # Every transform with justification
-    ├── validation_report.json     # Quality gates & confidence scores
-    └── agent_execution.jsonl      # Agent timeline
+
 ```
 
 ---
@@ -293,11 +290,7 @@ Designed for **policy makers, analysts, and data teams** across:
 
 Contributions welcome! Please fork, branch, and open a PR. For major changes, discuss via issues first.
 
----
 
-## 📜 License
-
-MIT License. Free to use, modify, and distribute.
 
 ---
 
