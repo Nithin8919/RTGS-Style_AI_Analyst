@@ -4,6 +4,11 @@
 
 This system automatically ingests, cleans, standardizes, and analyzes structured data to produce **executive summaries, technical analysis, and government-ready policy reports** — all in a single command.
 
+DEMO VIDEO 1 BREIF EXPLANATION OF THE PROJECT : https://drive.google.com/file/d/1J0oQ8DyS9JHZb48r00Wj_zVr_oPEr_Ek/view?usp=drive_link
+
+DEMO VIDEO 2 EXECUTION : https://drive.google.com/file/d/1fBOATXGNiTBb45xWQoZ-hGwYIK_vNNZt/view?usp=sharing
+
+
 
 <img width="2050" height="3840" alt="Image" src="https://github.com/user-attachments/assets/29020b75-34ad-4de6-99e7-a1ae404f06db" />
 
