@@ -130,8 +130,6 @@ dmypy.json
 
 # RTGS AI Analyst specific
 # Data directories - completely ignore all data content
-data/
-!data/.gitkeep
 
 \
 
@@ -191,7 +189,7 @@ htmlcov/
 *.dmp
 
 # Large data files and common artifact formats
-*.csv
+
 *.xlsx
 *.xls
 *.parquet

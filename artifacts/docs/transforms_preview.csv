@@ -1,0 +1,16 @@
+column,transformation,before_sample,after_sample,change_description
+circle,preserved,"BANJARA HILLS, BANJARA HILLS, BANJARA HILLS, BANJARA HILLS, BANJARA HILLS","BANJARA HILLS, BANJARA HILLS, BANJARA HILLS, BANJARA HILLS, BANJARA HILLS",Column preserved with potential value changes
+division,preserved,"GREEN LANDS, BANJARA HILLS, BANJARA HILLS, BANJARA HILLS, BANJARA HILLS","GREEN LANDS, BANJARA HILLS, BANJARA HILLS, BANJARA HILLS, BANJARA HILLS",Column preserved with potential value changes
+subdivision,preserved,"GREENLANDS, AMEERPET, AMEERPET, AMEERPET, AMEERPET","GREENLANDS, AMEERPET, AMEERPET, AMEERPET, AMEERPET",Column preserved with potential value changes
+section,preserved,"BEGUMPET, YOUSUFGUDA, SRI KRISHNA NAGAR, SRI KRISHNA NAGAR, SRI KRISHNA NAGAR","BEGUMPET, YOUSUFGUDA, SRI KRISHNA NAGAR, SRI KRISHNA NAGAR, SRI KRISHNA NAGAR",Column preserved with potential value changes
+area,preserved,"GRC - P.GADDA, P.NAGAR, SANTOSHGIRI, GRC HIGH VALUES, KALYAN NAGAR, SIDHARTHA NAGAR","GRC - P.GADDA, P.NAGAR, SANTOSHGIRI, GRC HIGH VALUES, KALYAN NAGAR, SIDHARTHA NAGAR",Column preserved with potential value changes
+catdesc,preserved,"COTTAGE INDUSTRIES AND DHOBIGHATS, COTTAGE INDUSTRIES AND DHOBIGHATS, COTTAGE INDUSTRIES AND DHOBIGHATS, COTTAGE INDUSTRIES AND DHOBIGHATS, COTTAGE INDUSTRIES AND DHOBIGHATS","COTTAGE INDUSTRIES AND DHOBIGHATS, COTTAGE INDUSTRIES AND DHOBIGHATS, COTTAGE INDUSTRIES AND DHOBIGHATS, COTTAGE INDUSTRIES AND DHOBIGHATS, COTTAGE INDUSTRIES AND DHOBIGHATS",Column preserved with potential value changes
+catcode,preserved,"4, 4, 4, 4, 4","4, 4, 4, 4, 4",Column preserved with potential value changes
+totservices,preserved,"1, 1, 1, 1, 1","1, 1, 1, 1, 1",Column preserved with potential value changes
+billdservices,preserved,"1.0, 1.0, 1.0, 1.0, 1.0","1.0, 1.0, 1.0, 1.0, 1.0",Column preserved with potential value changes
+units,preserved,"569.0, 134.0, 14.0, 85.0, 68.0","569.0, 134.0, 14.0, 85.0, 68.0",Column preserved with potential value changes
+load,preserved,"7.5, 0.75, 5.03, 2.25, 0.75","7.5, 0.75, 5.03, 2.25, 0.75",Column preserved with potential value changes
+totservices_outlier_flag,added,COLUMN_ADDED,"False, False, False, False, False","New column added during cleaning (e.g., outlier flag)"
+billdservices_outlier_flag,added,COLUMN_ADDED,"False, False, False, False, False","New column added during cleaning (e.g., outlier flag)"
+units_outlier_flag,added,COLUMN_ADDED,"False, False, False, False, False","New column added during cleaning (e.g., outlier flag)"
+load_outlier_flag,added,COLUMN_ADDED,"False, False, False, False, False","New column added during cleaning (e.g., outlier flag)"
