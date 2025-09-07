@@ -5,6 +5,9 @@
 This system automatically ingests, cleans, standardizes, and analyzes structured data to produce **executive summaries, technical analysis, and government-ready policy reports** — all in a single command.
 
 
+<img width="2050" height="3840" alt="Image" src="https://github.com/user-attachments/assets/29020b75-34ad-4de6-99e7-a1ae404f06db" />
+
+
 ## ✨ Features
 
 * **Data Agnostic**: Works with *any CSV/Excel dataset* without custom coding.
