@@ -241,9 +241,9 @@ artifacts/reports/rtgs-education-20250905-001/
 
 
 
-### **Frontend Integration**
+### **DEMO Frontend Integration**
 The project includes a React frontend for non-technical users which is not completely ready yet it has some placeholder analysis and visualization:
-
+also run the backend server to get the data from the artifacts folder which needs some tweaks to work.
 ```bash
 cd Frontend
 npm install
