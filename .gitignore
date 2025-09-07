@@ -133,9 +133,7 @@ dmypy.json
 data/
 !data/.gitkeep
 
-# Artifacts - completely ignore all generated content
-artifacts/
-!artifacts/.gitkeep
+\
 
 # Configuration files with secrets
 .env
@@ -210,7 +208,7 @@ htmlcov/
 
 # Report and visualization files
 *.html
-*.pdf
+
 *.png
 *.jpg
 *.jpeg
